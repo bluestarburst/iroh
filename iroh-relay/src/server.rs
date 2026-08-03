@@ -57,7 +57,7 @@ use self::http_server::{BytesBody, HyperError, HyperResult};
 use crate::{
     defaults::DEFAULT_KEY_CACHE_CAPACITY,
     http::{AUTH_TOKEN_URL_QUERY_PARAM, ProtocolVersion, RELAY_PROBE_PATH},
-    quic::server::{QuicServer, QuicSpawnError, ServerHandle as QuicServerHandle},
+    quic::server::{QuicServer, QuicSpawnError, RelayQuicServer, ServerHandle as QuicServerHandle},
     tls::CaTlsConfig,
 };
 
@@ -113,6 +113,8 @@ pub struct ServerConfig {
     pub relay: Option<RelayConfig>,
     /// Configuration for the QUIC server, disabled if `None`.
     pub quic: Option<QuicConfig>,
+    /// Configuration for the QUIC relay data-plane server, disabled if `None`.
+    pub quic_relay: Option<QuicRelayConfig>,
     /// Socket to serve metrics on.
     #[cfg(feature = "metrics")]
     pub metrics_addr: Option<SocketAddr>,
@@ -454,6 +456,28 @@ impl QuicConfig {
     }
 }
 
+/// Configuration for the QUIC relay data-plane server.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct QuicRelayConfig {
+    /// The socket address on which the QUIC relay server should bind.
+    pub bind_addr: SocketAddr,
+    /// The TLS server configuration for the QUIC relay server.
+    ///
+    /// Will use the TLS config from [`RelayConfig::tls`] if unset.
+    pub server_config: Option<rustls::ServerConfig>,
+}
+
+impl QuicRelayConfig {
+    /// Creates a new [`QuicRelayConfig`] bound to `bind_addr`.
+    pub fn new(bind_addr: impl Into<SocketAddr>) -> Self {
+        Self {
+            bind_addr: bind_addr.into(),
+            server_config: None,
+        }
+    }
+}
+
 /// TLS configuration for Relay server.
 ///
 /// Normally the Relay server accepts connections on both HTTPS and HTTP.
@@ -624,12 +648,16 @@ pub struct Server {
     https_addr: Option<SocketAddr>,
     /// The address of the QUIC server, if configured.
     quic_addr: Option<SocketAddr>,
+    /// The address of the QUIC relay data-plane server, if configured.
+    quic_relay_addr: Option<SocketAddr>,
     /// Handle to the relay server.
     relay_handle: Option<http_server::ServerHandle>,
     /// Handle to the relay service for runtime control.
     relay_service: Option<http_server::RelayService>,
     /// Handle to the quic server.
     quic_handle: Option<QuicServerHandle>,
+    /// Handle to the quic relay data-plane server.
+    quic_relay_handle: Option<QuicServerHandle>,
     /// The main task running the server.
     supervisor: AbortOnDropHandle<Result<(), SupervisorError>>,
     metrics: RelayMetrics,
@@ -843,7 +871,7 @@ impl Server {
                 debug!("Starting QUIC server {}", quic_config.bind_addr);
                 let server_config = quic_config
                     .server_config
-                    .or(tls_config.map(|config| (*config.config).clone()))
+                    .or_else(|| tls_config.as_ref().map(|config| (*config.config).clone()))
                     .ok_or_else(|| {
                         e!(SpawnError::QuicSpawn, e!(QuicSpawnError::TlsNotConfigured))
                     })?;
@@ -856,16 +884,42 @@ impl Server {
         };
         let quic_addr = quic_server.as_ref().map(|srv| srv.bind_addr());
         let quic_handle = quic_server.as_ref().map(|srv| srv.handle());
+        let quic_relay_server = match (config.quic_relay, relay_service.clone()) {
+            (Some(quic_config), Some(relay_service)) => {
+                debug!("Starting QUIC relay server {}", quic_config.bind_addr);
+                let server_config = quic_config
+                    .server_config
+                    .or_else(|| tls_config.as_ref().map(|config| (*config.config).clone()))
+                    .ok_or_else(|| {
+                        e!(SpawnError::QuicSpawn, e!(QuicSpawnError::TlsNotConfigured))
+                    })?;
+                Some(
+                    RelayQuicServer::spawn(quic_config.bind_addr, server_config, relay_service)
+                        .map_err(|err| e!(SpawnError::QuicSpawn, err))?,
+                )
+            }
+            (Some(_), None) => None,
+            (None, _) => None,
+        };
+        let quic_relay_addr = quic_relay_server.as_ref().map(|srv| srv.bind_addr());
+        let quic_relay_handle = quic_relay_server.as_ref().map(|srv| srv.handle());
 
-        let task = tokio::spawn(relay_supervisor(tasks, relay_server, quic_server));
+        let task = tokio::spawn(relay_supervisor(
+            tasks,
+            relay_server,
+            quic_server,
+            quic_relay_server,
+        ));
 
         Ok(Self {
             http_addr: http_addr.or(relay_addr),
             https_addr: http_addr.and(relay_addr),
             quic_addr,
+            quic_relay_addr,
             relay_handle,
             relay_service,
             quic_handle,
+            quic_relay_handle,
             supervisor: AbortOnDropHandle::new(task),
             metrics,
             metrics_server,
@@ -882,6 +936,9 @@ impl Server {
             handle.shutdown();
         }
         if let Some(handle) = self.quic_handle {
+            handle.shutdown();
+        }
+        if let Some(handle) = self.quic_relay_handle {
             handle.shutdown();
         }
         if let Some(server) = self.metrics_server {
@@ -914,6 +971,11 @@ impl Server {
     /// The socket address the QUIC server is listening on.
     pub fn quic_addr(&self) -> Option<SocketAddr> {
         self.quic_addr
+    }
+
+    /// The socket address the QUIC relay data-plane server is listening on.
+    pub fn quic_relay_addr(&self) -> Option<SocketAddr> {
+        self.quic_relay_addr
     }
 
     /// Get the server's https [`RelayUrl`].
@@ -960,6 +1022,7 @@ async fn relay_supervisor(
     mut tasks: JoinSet<Result<(), SupervisorError>>,
     mut relay_http_server: Option<http_server::Server>,
     mut quic_server: Option<QuicServer>,
+    mut quic_relay_server: Option<RelayQuicServer>,
 ) -> Result<(), SupervisorError> {
     let quic_enabled = quic_server.is_some();
     let mut quic_fut = match quic_server {
@@ -971,10 +1034,16 @@ async fn relay_supervisor(
         Some(ref mut server) => n0_future::Either::Left(server.task_handle()),
         None => n0_future::Either::Right(n0_future::future::pending()),
     };
+    let quic_relay_enabled = quic_relay_server.is_some();
+    let mut quic_relay_fut = match quic_relay_server {
+        Some(ref mut server) => n0_future::Either::Left(server.task_handle()),
+        None => n0_future::Either::Right(n0_future::future::pending()),
+    };
     let res = tokio::select! {
         biased;
         Some(ret) = tasks.join_next() => ret,
         ret = &mut quic_fut, if quic_enabled => ret.map(Ok),
+        ret = &mut quic_relay_fut, if quic_relay_enabled => ret.map(Ok),
         ret = &mut relay_fut, if relay_enabled => ret.map(Ok),
         else => Ok(Err(e!(SupervisorError::NoRelayServicesEnabled))),
     };
@@ -1005,6 +1074,9 @@ async fn relay_supervisor(
 
     // Ensure the QUIC server is closed
     if let Some(server) = quic_server {
+        server.shutdown().await;
+    }
+    if let Some(server) = quic_relay_server {
         server.shutdown().await;
     }
 
@@ -1229,6 +1301,7 @@ mod tests {
         Server::spawn(ServerConfig {
             relay: Some(relay),
             quic: None,
+            quic_relay: None,
             metrics_addr: None,
         })
         .await
@@ -1292,6 +1365,7 @@ mod tests {
         let res = Server::spawn(ServerConfig {
             relay: Some(relay),
             quic: None,
+            quic_relay: None,
             metrics_addr: Some((Ipv4Addr::LOCALHOST, 1234).into()),
         })
         .await;
@@ -1434,6 +1508,7 @@ mod tests {
         let server = Server::spawn(ServerConfig {
             relay: Some(relay),
             quic: None,
+            quic_relay: None,
             metrics_addr: None,
         })
         .await?;
@@ -1517,6 +1592,7 @@ mod tests {
         let server = Server::spawn(ServerConfig {
             relay: Some(relay),
             quic: None,
+            quic_relay: None,
             metrics_addr: None,
         })
         .await?;

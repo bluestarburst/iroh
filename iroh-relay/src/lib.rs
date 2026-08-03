@@ -45,6 +45,7 @@ pub(crate) mod test_utils;
 pub mod tls;
 
 pub use crate::{
+    client::RelayTransportPolicy,
     key_cache::KeyCache,
     ping_tracker::PingTracker,
     protos::relay::MAX_PACKET_SIZE,

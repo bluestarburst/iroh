@@ -42,7 +42,11 @@ use crate::{
         CLIENT_AUTH_HEADER, ProtocolVersion, RELAY_PATH, SUPPORTED_WEBSOCKET_VERSION,
         WEBSOCKET_UPGRADE_PROTOCOL,
     },
-    protos::{handshake, relay::MAX_FRAME_SIZE, streams::WsBytesFramed},
+    protos::{
+        handshake,
+        relay::MAX_FRAME_SIZE,
+        streams::{BytesStreamSink, WsBytesFramed},
+    },
     server::{
         ClientRateLimit,
         client::Config,
@@ -954,6 +958,48 @@ impl RelayService {
         &self.0.clients
     }
 
+    pub(crate) async fn accept_framed_relay_io<S>(
+        &self,
+        mut io: S,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), AcceptError>
+    where
+        S: BytesStreamSink + crate::ExportKeyingMaterial + Send + 'static,
+    {
+        // QUIC relay authentication proves Endpoint ID ownership here. Bearer
+        // relay auth needs a dedicated handshake extension because QUIC has no
+        // HTTP request headers or query string to carry the existing token.
+        let client_auth_header = None;
+        let authentication = handshake::serverside(&mut io, client_auth_header).await?;
+
+        trace!(?authentication.mechanism, "accept: verified QUIC authentication");
+
+        let (request_parts, _) = Request::builder()
+            .method(Method::GET)
+            .uri(RELAY_PATH)
+            .body(())
+            .expect("valid synthetic relay request")
+            .into_parts();
+        let request =
+            ClientRequest::new(authentication.client_key, protocol_version, request_parts);
+
+        let guard = authentication
+            .authorize_with(&request, &self.0.access, &mut io)
+            .await?;
+
+        let io = RelayedStream {
+            inner: io,
+            key_cache: self.0.key_cache.clone(),
+        };
+
+        let mut client_conn_builder = Config::new(guard, io, protocol_version);
+        client_conn_builder.write_timeout = self.0.write_timeout;
+        self.0
+            .clients
+            .register(client_conn_builder, self.0.metrics.clone());
+        Ok(())
+    }
+
     /// Handle the incoming connection.
     ///
     /// If a `tls_config` is given, will serve the connection using HTTPS, otherwise HTTP.
@@ -1471,8 +1517,10 @@ mod tests {
     }
 
     async fn make_test_client(client: tokio::io::DuplexStream, key: &SecretKey) -> Result<Conn> {
-        let client = crate::client::streams::MaybeTlsStream::Test(client);
+        let client =
+            crate::client::streams::MaybeTlsStream::<tokio::io::DuplexStream>::Test(client);
         let client = tokio_websockets::ClientBuilder::new().take_over(client);
+        let client = WsBytesFramed { io: client };
         let client = Conn::new(client, KeyCache::test(), key, Default::default()).await?;
         Ok(client)
     }

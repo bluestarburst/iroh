@@ -21,7 +21,7 @@ use n0_future::{
     split::{SplitSink, SplitStream, split},
     time,
 };
-use tracing::{debug, trace};
+use tracing::{Level, debug, event, trace};
 use url::Url;
 
 pub use self::conn::{RecvError, SendError};
@@ -36,11 +36,26 @@ use crate::{
 
 pub(crate) mod conn;
 #[cfg(not(wasm_browser))]
+pub(crate) mod quic_stream;
+#[cfg(not(wasm_browser))]
 pub(crate) mod streams;
 #[cfg(not(wasm_browser))]
 mod tls;
 #[cfg(not(wasm_browser))]
 mod util;
+
+/// Selects the client-to-relay carriage used by native relay clients.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RelayTransportPolicy {
+    /// Try QUIC first, then fall back to the existing WebSocket relay carriage.
+    Auto,
+    /// Require QUIC and fail closed if the QUIC relay cannot be reached.
+    QuicRequired,
+    /// Use only the existing WebSocket relay carriage.
+    #[default]
+    WebsocketRequired,
+}
 
 /// Connection errors.
 ///
@@ -136,6 +151,9 @@ pub enum DialError {
     ProxyInvalidTlsServername { proxy_hostname: String },
     #[error("Invalid proxy target port")]
     ProxyInvalidTargetPort {},
+    #[cfg(not(wasm_browser))]
+    #[error("QUIC relay failed: {reason}")]
+    Quic { reason: String },
 }
 
 /// Build a Client.
@@ -157,6 +175,10 @@ pub struct ClientBuilder {
     /// Sent as an `Authorization: Bearer` header on native targets and as
     /// a `?token=` query parameter under Wasm. See [`ClientBuilder::auth_token`].
     auth_token: Option<String>,
+    /// Native relay carriage policy.
+    transport_policy: RelayTransportPolicy,
+    /// UDP port used by the QUIC relay data plane.
+    quic_port: u16,
     #[cfg(not(wasm_browser))]
     dns_resolver: DnsResolver,
     /// Cache for public keys of remote endpoints.
@@ -180,6 +202,8 @@ impl ClientBuilder {
             dns_resolver,
             key_cache: KeyCache::new(128),
             auth_token: None,
+            transport_policy: RelayTransportPolicy::WebsocketRequired,
+            quic_port: crate::defaults::DEFAULT_RELAY_QUIC_DATA_PORT,
         }
     }
 
@@ -246,6 +270,18 @@ impl ClientBuilder {
         self
     }
 
+    /// Sets the native client-to-relay carriage policy.
+    pub fn transport_policy(mut self, policy: RelayTransportPolicy) -> Self {
+        self.transport_policy = policy;
+        self
+    }
+
+    /// Sets the UDP port used by the QUIC relay data plane.
+    pub fn quic_port(mut self, port: u16) -> Self {
+        self.quic_port = port;
+        self
+    }
+
     /// Set the capacity of the cache for public keys.
     pub fn key_cache_capacity(mut self, capacity: usize) -> Self {
         self.key_cache = KeyCache::new(capacity);
@@ -255,6 +291,25 @@ impl ClientBuilder {
     /// Establishes a new connection to the relay server.
     #[cfg(not(wasm_browser))]
     pub async fn connect(&self) -> Result<Client, ConnectError> {
+        match self.transport_policy {
+            RelayTransportPolicy::WebsocketRequired => self.connect_websocket().await,
+            RelayTransportPolicy::QuicRequired => self.connect_quic().await,
+            RelayTransportPolicy::Auto => match self.connect_quic().await {
+                Ok(client) => Ok(client),
+                Err(err) => {
+                    debug!(
+                        ?err,
+                        "QUIC relay dial failed; falling back to websocket relay"
+                    );
+                    self.connect_websocket().await
+                }
+            },
+        }
+    }
+
+    /// Establishes a new websocket connection to the relay server.
+    #[cfg(not(wasm_browser))]
+    async fn connect_websocket(&self) -> Result<Client, ConnectError> {
         use http::header::{AUTHORIZATION, HeaderValue, SEC_WEBSOCKET_PROTOCOL};
         use n0_error::StdResultExt;
         use tls::MaybeTlsStreamBuilder;
@@ -355,7 +410,7 @@ impl ClientBuilder {
             })?;
 
         let conn = Conn::new(
-            conn,
+            crate::protos::streams::WsBytesFramed { io: conn },
             self.key_cache.clone(),
             &self.secret_key,
             protocol_version,
@@ -363,6 +418,100 @@ impl ClientBuilder {
         .await?;
 
         trace!("connect done");
+
+        Ok(Client {
+            conn,
+            local_addr: Some(local_addr),
+        })
+    }
+
+    /// Establishes a new QUIC stream connection to the relay server.
+    #[cfg(not(wasm_browser))]
+    fn quic_dial_error(reason: impl Into<String>) -> ConnectError {
+        e!(
+            ConnectError::Dial,
+            e!(DialError::Quic {
+                reason: reason.into()
+            })
+        )
+    }
+
+    /// Establishes a new QUIC stream connection to the relay server.
+    #[cfg(not(wasm_browser))]
+    async fn connect_quic(&self) -> Result<Client, ConnectError> {
+        use noq::crypto::rustls::QuicClientConfig;
+
+        use crate::{protos::relay::MAX_FRAME_SIZE, quic::ALPN_QUIC_RELAY};
+
+        let host = self
+            .url
+            .host_str()
+            .ok_or_else(|| Self::quic_dial_error("relay URL has no host"))?
+            .to_string();
+        let port = self.quic_port;
+        let mut addrs = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|err| Self::quic_dial_error(format!("unable to resolve {host}: {err}")))?
+            .collect::<Vec<_>>();
+        if !self.prefer_ipv6() {
+            addrs.sort_by_key(|addr| addr.is_ipv6());
+        }
+        let server_addr = addrs.into_iter().next().ok_or_else(|| {
+            Self::quic_dial_error(format!("unable to resolve {host}: no relay addresses"))
+        })?;
+
+        debug!(%server_addr, relay = %self.url, "Dialing relay by QUIC");
+
+        let mut tls_config = self
+            .tls_config
+            .clone()
+            .ok_or_else(|| e!(ConnectError::MissingCryptoProvider))?;
+        tls_config.alpn_protocols = vec![ALPN_QUIC_RELAY.to_vec()];
+        let mut client_config = noq::ClientConfig::new(Arc::new(
+            QuicClientConfig::try_from(tls_config).expect("known ciphersuite"),
+        ));
+        let mut transport = noq::TransportConfig::default();
+        transport.keep_alive_interval(Some(time::Duration::from_secs(25)));
+        transport.max_idle_timeout(Some(
+            time::Duration::from_secs(35)
+                .try_into()
+                .expect("known value"),
+        ));
+        client_config.transport_config(Arc::new(transport));
+
+        let bind_addr = if server_addr.is_ipv6() {
+            "[::]:0".parse().expect("valid IPv6 wildcard")
+        } else {
+            "0.0.0.0:0".parse().expect("valid IPv4 wildcard")
+        };
+        let endpoint = noq::Endpoint::client(bind_addr)
+            .map_err(|err| Self::quic_dial_error(format!("unable to create endpoint: {err}")))?;
+        let local_addr = endpoint
+            .local_addr()
+            .map_err(|err| Self::quic_dial_error(format!("unable to read local address: {err}")))?;
+        let connection = endpoint
+            .connect_with(client_config, server_addr, &host)
+            .map_err(|err| Self::quic_dial_error(format!("connect setup failed: {err}")))?
+            .await
+            .map_err(|err| Self::quic_dial_error(format!("connection failed: {err}")))?;
+        let (send, recv) = connection
+            .open_bi()
+            .await
+            .map_err(|err| Self::quic_dial_error(format!("open control stream failed: {err}")))?;
+        let conn = Conn::new(
+            quic_stream::QuicBytesFramed::new(send, recv, MAX_FRAME_SIZE),
+            self.key_cache.clone(),
+            &self.secret_key,
+            ProtocolVersion::V2,
+        )
+        .await?;
+
+        event!(
+            target: "iroh::_events::net::relay::connected",
+            Level::DEBUG,
+            url = %self.url,
+            carriage = "quic",
+        );
 
         Ok(Client {
             conn,
@@ -427,7 +576,7 @@ impl ClientBuilder {
             })?;
 
         let conn = Conn::new(
-            ws_stream,
+            crate::protos::streams::WsBytesFramed { io: ws_stream },
             self.key_cache.clone(),
             &self.secret_key,
             protocol_version,
