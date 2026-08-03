@@ -43,6 +43,8 @@ use crate::util::is_relayed;
 // without setting an explicit path.
 #[path = "patchbay/degrade.rs"]
 mod degrade;
+#[path = "patchbay/mobile.rs"]
+mod mobile;
 #[path = "patchbay/nat.rs"]
 mod nat;
 #[path = "patchbay/switch-uplink.rs"]
@@ -239,6 +241,96 @@ async fn link_outage_recovery_client() -> Result {
 #[traced_test]
 async fn link_outage_recovery_server() -> Result {
     run_link_outage_recovery(Side::Server, Duration::from_secs(5)).await
+}
+
+/// Moves one side from a holepunchable NAT to a hard NAT and back while the
+/// same QUIC connection remains open. This is the production failure mode that
+/// catches a connection becoming stuck on relay after direct reachability
+/// returns.
+async fn run_direct_relay_direct_repromotion(replug_side: Side) -> Result {
+    let (lab, relay_map, _relay_guard, guard) = lab_with_relay(testdir!()).await?;
+    let nat_easy = lab.add_router("nat_easy").nat(Nat::Home).build().await?;
+    let nat_hard = lab
+        .add_router("nat_hard")
+        .nat(Nat::Corporate)
+        .build()
+        .await?;
+    let nat_peer = lab.add_router("nat_peer").nat(Nat::Home).build().await?;
+    let replug = lab
+        .add_device("replug")
+        .uplink(nat_easy.id())
+        .build()
+        .await?;
+    let peer = lab.add_device("peer").uplink(nat_peer.id()).build().await?;
+    let timeout = Duration::from_secs(20);
+
+    Pair::new(relay_map)
+        .left(replug_side, replug, async move |dev, _ep, conn| {
+            let stable_id = conn.stable_id();
+            conn.wait_ip(timeout).await.context("initial direct path")?;
+            ping_open(&conn, timeout)
+                .await
+                .context("ping on initial direct path")?;
+
+            info!("replugging to hard NAT and waiting for relay fallback");
+            dev.iface("eth0").unwrap().replug(nat_hard.id()).await?;
+            conn.wait_selected(timeout, |path| path.is_relay())
+                .await
+                .context("did not fall back to relay behind hard NAT")?;
+            assert_eq!(
+                conn.stable_id(),
+                stable_id,
+                "relay fallback replaced the QUIC connection"
+            );
+            ping_open(&conn, timeout)
+                .await
+                .context("ping on relay fallback")?;
+
+            info!("restoring holepunchable NAT and waiting for direct re-promotion");
+            dev.iface("eth0").unwrap().replug(nat_easy.id()).await?;
+            conn.wait_ip(timeout)
+                .await
+                .context("did not re-promote to direct path")?;
+            assert_eq!(
+                conn.stable_id(),
+                stable_id,
+                "direct re-promotion replaced the QUIC connection"
+            );
+            ping_open(&conn, timeout)
+                .await
+                .context("ping after direct re-promotion")?;
+            conn.close(0u32.into(), b"bye");
+            Ok(())
+        })
+        .right(peer, async move |_dev, _ep, conn| {
+            ping_accept(&conn, timeout)
+                .await
+                .context("accept initial direct ping")?;
+            ping_accept(&conn, timeout)
+                .await
+                .context("accept relay fallback ping")?;
+            ping_accept(&conn, timeout)
+                .await
+                .context("accept direct re-promotion ping")?;
+            conn.closed().await;
+            Ok(())
+        })
+        .run()
+        .await?;
+    guard.ok();
+    Ok(())
+}
+
+#[tokio::test]
+#[traced_test]
+async fn direct_relay_direct_repromotion_client() -> Result {
+    run_direct_relay_direct_repromotion(Side::Client).await
+}
+
+#[tokio::test]
+#[traced_test]
+async fn direct_relay_direct_repromotion_server() -> Result {
+    run_direct_relay_direct_repromotion(Side::Server).await
 }
 
 /// Starts one side behind a symmetric NAT (no holepunch possible), then replugs

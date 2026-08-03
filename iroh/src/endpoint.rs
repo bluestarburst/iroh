@@ -16,7 +16,7 @@ use std::{collections::BTreeSet, net::SocketAddr, pin::Pin, sync::Arc};
 #[cfg(not(wasm_browser))]
 use ipnet::{Ipv4Net, Ipv6Net};
 use iroh_base::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr};
-use iroh_relay::{RelayConfig, RelayMap, tls::CaTlsConfig};
+use iroh_relay::{RelayConfig, RelayMap, RelayTransportPolicy, tls::CaTlsConfig};
 #[cfg(not(wasm_browser))]
 use n0_error::bail;
 use n0_error::{AnyError, e, ensure, stack_error};
@@ -140,6 +140,8 @@ pub struct Builder {
     ca_tls_config: Option<CaTlsConfig>,
     #[cfg(not(wasm_browser))]
     dns_resolver: Option<DnsResolver>,
+    #[cfg(not(wasm_browser))]
+    relay_transport_policy: RelayTransportPolicy,
     transports: Vec<TransportConfig>,
     max_tls_tickets: usize,
     hooks: EndpointHooksList,
@@ -208,6 +210,8 @@ impl Builder {
             ca_tls_config: None,
             #[cfg(not(wasm_browser))]
             dns_resolver: None,
+            #[cfg(not(wasm_browser))]
+            relay_transport_policy: RelayTransportPolicy::WebsocketRequired,
             max_tls_tickets: DEFAULT_MAX_TLS_TICKETS,
             transports,
             hooks: Default::default(),
@@ -270,6 +274,8 @@ impl Builder {
             proxy_url: self.proxy_url,
             #[cfg(not(wasm_browser))]
             dns_resolver,
+            #[cfg(not(wasm_browser))]
+            relay_transport_policy: self.relay_transport_policy,
             server_config,
             tls_config,
             metrics,
@@ -573,6 +579,13 @@ impl Builder {
                     .retain(|t| !matches!(t, TransportConfig::Relay { .. }));
             }
         }
+        self
+    }
+
+    /// Sets the native client-to-relay carriage policy.
+    #[cfg(not(wasm_browser))]
+    pub fn relay_transport_policy(mut self, policy: RelayTransportPolicy) -> Self {
+        self.relay_transport_policy = policy;
         self
     }
 
@@ -1127,7 +1140,11 @@ impl Endpoint {
             "connecting",
         );
 
-        let mapped_addr = self.inner.resolve_remote(endpoint_addr).await??;
+        let preferred_transport_addr = options.preferred_transport_addr.clone();
+        let mapped_addr = self
+            .inner
+            .resolve_remote(endpoint_addr, preferred_transport_addr)
+            .await??;
 
         let transport_config = options
             .transport_config
@@ -1627,6 +1644,29 @@ impl Endpoint {
         self.inner.remote_info(endpoint_id).await
     }
 
+    /// Closes every live connection to `endpoint_id` except one concrete
+    /// connection generation.
+    ///
+    /// Most applications should let protocol actors manage their connections.
+    /// This advanced lifecycle hook is for a shared endpoint whose control
+    /// plane has authoritative evidence that a remote process restarted while
+    /// retaining the same durable endpoint identity. Protocols attached to the
+    /// retired process are closed so they can establish fresh sessions against
+    /// the preserved control connection.
+    pub async fn retire_remote_connections_except(
+        &self,
+        endpoint_id: EndpointId,
+        keep_stable_id: usize,
+        reason: &[u8],
+    ) -> usize {
+        if self.is_closed() {
+            return 0;
+        }
+        self.inner
+            .retire_remote_connections_except(endpoint_id, keep_stable_id, reason)
+            .await
+    }
+
     // # Methods for less common state updates.
 
     /// Notifies the system of potential network changes.
@@ -1769,6 +1809,7 @@ impl Endpoint {
 pub struct ConnectOptions {
     transport_config: Option<QuicTransportConfig>,
     additional_alpns: Vec<Vec<u8>>,
+    preferred_transport_addr: Option<TransportAddr>,
 }
 
 impl ConnectOptions {
@@ -1783,6 +1824,17 @@ impl ConnectOptions {
     /// Sets the QUIC transport config options for this connection.
     pub fn with_transport_config(mut self, transport_config: QuicTransportConfig) -> Self {
         self.transport_config = Some(transport_config);
+        self
+    }
+
+    /// Pins the initial connection attempt to one address from the supplied
+    /// [`EndpointAddr`]. Once the connection is established, normal path
+    /// selection and migration resume.
+    ///
+    /// This is useful for explicitly establishing a custom transport when the
+    /// endpoint already has a working cached path to the same remote.
+    pub fn with_preferred_transport_addr(mut self, addr: TransportAddr) -> Self {
+        self.preferred_transport_addr = Some(addr);
         self
     }
 
@@ -2025,7 +2077,8 @@ mod tests {
         address_lookup::memory::MemoryLookup,
         endpoint::{
             ApplicationClose, BindError, BindOpts, ConnectError, ConnectOptions,
-            ConnectWithOptsError, Connection, ConnectionError, PathEvent, PathEventStream, presets,
+            ConnectWithOptsError, Connection, ConnectionError, PathEvent, PathEventStream,
+            TransportAddrUsage, presets,
         },
         protocol::{AcceptError, ProtocolHandler, Router},
         test_utils::{
@@ -3859,6 +3912,149 @@ mod tests {
             }
         });
         tokio::join!(ep1.close(), ep2.close(), client.close());
+        Ok(())
+    }
+
+    /// A durable endpoint identity can outlive a concrete process. When a
+    /// replacement process first establishes a control connection, retiring
+    /// the old process's protocol connections must also retire their
+    /// connection-owned paths. Otherwise a new protocol handshake can be sent
+    /// to the old generation's selected direct path even though the
+    /// replacement is connected through the relay.
+    #[tokio::test]
+    #[traced_test]
+    async fn same_endpoint_id_replacement_reselects_live_path_for_new_alpn() -> Result {
+        const CONTROL_ALPN: &[u8] = b"openrtc/control/replacement-test";
+        const PRODUCT_ALPN: &[u8] = b"plutonium/product/replacement-test";
+
+        let (relay_map, _relay_url, _relay_server_guard) = run_relay_server().await?;
+        let replacement_secret = SecretKey::generate();
+
+        let local = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(relay_map.clone()))
+            .ca_tls_config(CaTlsConfig::insecure_skip_verify())
+            .alpns(vec![CONTROL_ALPN.to_vec(), PRODUCT_ALPN.to_vec()])
+            .bind()
+            .await?;
+        local.online().await;
+
+        let retired_process = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(relay_map.clone()))
+            .secret_key(replacement_secret.clone())
+            .ca_tls_config(CaTlsConfig::insecure_skip_verify())
+            .alpns(vec![CONTROL_ALPN.to_vec(), PRODUCT_ALPN.to_vec()])
+            .bind()
+            .await?;
+        retired_process.online().await;
+
+        let retired_process_addr = EndpointAddr::from_parts(
+            replacement_secret.public(),
+            retired_process
+                .addr()
+                .addrs
+                .into_iter()
+                .filter(TransportAddr::is_ip),
+        );
+        let (retired_local_conn, retired_remote_conn) =
+            tokio::join!(local.connect(retired_process_addr, PRODUCT_ALPN), async {
+                retired_process.accept().await.anyerr()?.await.anyerr()
+            });
+        let retired_local_conn = retired_local_conn.anyerr()?;
+        let retired_remote_conn = retired_remote_conn?;
+        let retired_selected_path = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(addr) = retired_local_conn
+                    .paths()
+                    .iter()
+                    .find(|path| path.is_selected())
+                    .map(|path| path.remote_addr().clone())
+                {
+                    break addr;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .std_context("retired process never selected a path")?;
+
+        let replacement_process = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(relay_map))
+            .secret_key(replacement_secret)
+            .ca_tls_config(CaTlsConfig::insecure_skip_verify())
+            .alpns(vec![CONTROL_ALPN.to_vec(), PRODUCT_ALPN.to_vec()])
+            .bind()
+            .await?;
+        replacement_process.online().await;
+
+        let replacement_addr = EndpointAddr::from_parts(
+            replacement_process.id(),
+            replacement_process
+                .addr()
+                .addrs
+                .into_iter()
+                .filter(TransportAddr::is_ip),
+        );
+        let local_addr = EndpointAddr::from_parts(
+            local.id(),
+            local.addr().addrs.into_iter().filter(TransportAddr::is_ip),
+        );
+        let (replacement_control_conn, admitted_control_conn) = tokio::join!(
+            replacement_process.connect(local_addr, CONTROL_ALPN),
+            async { local.accept().await.anyerr()?.await.anyerr() }
+        );
+        let replacement_control_conn = replacement_control_conn.anyerr()?;
+        let admitted_control_conn = admitted_control_conn?;
+        assert!(
+            admitted_control_conn
+                .paths()
+                .iter()
+                .all(|path| path.remote_addr() != &retired_selected_path),
+            "the regression requires distinct concrete process paths"
+        );
+
+        let retired = local
+            .retire_remote_connections_except(
+                replacement_process.id(),
+                admitted_control_conn.stable_id(),
+                b"same-endpoint-id-process-replacement",
+            )
+            .await;
+        assert_eq!(retired, 1, "the old product connection must be fenced");
+        tokio::time::timeout(Duration::from_secs(5), retired_local_conn.closed())
+            .await
+            .std_context("retired product connection did not close")?;
+        let retired_path_usage = local
+            .remote_info(replacement_process.id())
+            .await
+            .and_then(|info| {
+                info.into_addrs()
+                    .find(|addr| addr.addr() == &retired_selected_path)
+            })
+            .map(|addr| addr.usage());
+        assert!(
+            matches!(retired_path_usage, Some(TransportAddrUsage::Inactive)),
+            "retired process path remained active in the endpoint map: {retired_path_usage:?}"
+        );
+
+        let (fresh_product_conn, accepted_product_conn) =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (dialed, accepted) =
+                    tokio::join!(local.connect(replacement_addr, PRODUCT_ALPN), async {
+                        replacement_process.accept().await.anyerr()?.await.anyerr()
+                    });
+                Ok::<_, Error>((dialed.anyerr()?, accepted?))
+            })
+            .await
+            .std_context("new product ALPN dial reused the retired process path")??;
+
+        fresh_product_conn.close(0u32.into(), b"test-complete");
+        accepted_product_conn.close(0u32.into(), b"test-complete");
+        replacement_control_conn.close(0u32.into(), b"test-complete");
+        admitted_control_conn.close(0u32.into(), b"test-complete");
+        retired_remote_conn.close(0u32.into(), b"test-complete");
+        local.close().await;
+        retired_process.close().await;
+        replacement_process.close().await;
         Ok(())
     }
 

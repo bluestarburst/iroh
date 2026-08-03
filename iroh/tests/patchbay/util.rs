@@ -426,6 +426,49 @@ pub(crate) async fn ping_accept(conn: &Connection, timeout: Duration) -> Result 
     .with_std_context(|_| format!("ping_accept timed out after {timeout:?}"))?
 }
 
+/// Sends a deterministic payload over one bidirectional stream and verifies
+/// the exact echoed bytes. This exercises QUIC segmentation and path MTU
+/// discovery instead of proving only an eight-byte control message.
+pub(crate) async fn payload_open(
+    conn: &Connection,
+    payload_len: usize,
+    timeout: Duration,
+) -> Result {
+    tokio::time::timeout(timeout, async {
+        let data = (0..payload_len)
+            .map(|index| ((index * 31 + 17) % 251) as u8)
+            .collect::<Vec<_>>();
+        let (mut send, mut recv) = conn.open_bi().await.anyerr()?;
+        send.write_all(&data).await.anyerr()?;
+        send.finish().anyerr()?;
+        let echoed = recv.read_to_end(payload_len).await.anyerr()?;
+        ensure_any!(echoed == data, "payload reply matches");
+        Ok(())
+    })
+    .instrument(error_span!("payload_open", payload_len))
+    .await
+    .with_std_context(|_| format!("payload_open timed out after {timeout:?}"))?
+}
+
+/// Echoes one bounded payload opened by [`payload_open`].
+pub(crate) async fn payload_accept(
+    conn: &Connection,
+    payload_len: usize,
+    timeout: Duration,
+) -> Result {
+    tokio::time::timeout(timeout, async {
+        let (mut send, mut recv) = conn.accept_bi().await.anyerr()?;
+        let data = recv.read_to_end(payload_len).await.anyerr()?;
+        ensure_any!(data.len() == payload_len, "payload length matches");
+        send.write_all(&data).await.anyerr()?;
+        send.finish().anyerr()?;
+        Ok(())
+    })
+    .instrument(error_span!("payload_accept", payload_len))
+    .await
+    .with_std_context(|_| format!("payload_accept timed out after {timeout:?}"))?
+}
+
 fn watch_selected_path(conn: &Connection) {
     let mut events = conn.path_events();
     if let Some(path) = conn.paths().iter().find(|p| p.is_selected()) {

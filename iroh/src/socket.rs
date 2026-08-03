@@ -26,6 +26,8 @@ use std::{
 };
 
 use iroh_base::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr};
+#[cfg(not(wasm_browser))]
+use iroh_relay::RelayTransportPolicy;
 use iroh_relay::{RelayConfig, RelayMap};
 use mapped_addrs::MultipathMappedAddr;
 use n0_error::{AnyError, anyerr, bail, e, stack_error};
@@ -175,6 +177,10 @@ pub(crate) struct Options {
     /// that uses the system's DNS configuration.
     #[cfg(not(wasm_browser))]
     pub(crate) dns_resolver: DnsResolver,
+
+    /// Native client-to-relay carriage policy.
+    #[cfg(not(wasm_browser))]
+    pub(crate) relay_transport_policy: RelayTransportPolicy,
 
     /// Proxy configuration.
     pub(crate) proxy_url: Option<Url>,
@@ -883,6 +889,8 @@ impl EndpointInner {
             address_lookup_user_data,
             #[cfg(not(wasm_browser))]
             dns_resolver,
+            #[cfg(not(wasm_browser))]
+            relay_transport_policy,
             proxy_url,
             server_config,
             tls_config,
@@ -927,6 +935,8 @@ impl EndpointInner {
             secret_key: secret_key.clone(),
             #[cfg(not(wasm_browser))]
             dns_resolver: dns_resolver.clone(),
+            #[cfg(not(wasm_browser))]
+            relay_transport_policy,
             proxy_url: proxy_url.clone(),
             ipv6_reported: ipv6_reported.clone(),
             tls_config: tls_config.clone(),
@@ -1320,12 +1330,17 @@ impl EndpointInner {
     pub(crate) async fn resolve_remote(
         &self,
         addr: EndpointAddr,
+        preferred_transport_addr: Option<TransportAddr>,
     ) -> Result<Result<EndpointIdMappedAddr, AddressLookupFailed>, RemoteStateActorStoppedError>
     {
         let (tx, rx) = oneshot::channel();
         let remote_id = addr.id;
         self.actor_sender
-            .send(ActorMessage::ResolveRemote(addr, tx))
+            .send(ActorMessage::ResolveRemote(
+                addr,
+                preferred_transport_addr,
+                tx,
+            ))
             .await
             .ok();
         let reply = rx.await.map_err(|_| RemoteStateActorStoppedError::new())?;
@@ -1346,6 +1361,32 @@ impl EndpointInner {
             .await
             .ok()?;
         rx.await.ok()
+    }
+
+    /// Closes every live connection to `id` except the concrete connection
+    /// identified by `keep_stable_id`.
+    pub(crate) async fn retire_remote_connections_except(
+        &self,
+        id: EndpointId,
+        keep_stable_id: usize,
+        reason: &[u8],
+    ) -> usize {
+        let Some(actor) = self.remote_actors.get(&id) else {
+            return 0;
+        };
+        let (tx, rx) = oneshot::channel();
+        if actor
+            .send(RemoteStateMessage::RetireConnectionsExcept {
+                keep_stable_id,
+                reason: reason.to_vec(),
+                tx,
+            })
+            .await
+            .is_err()
+        {
+            return 0;
+        }
+        rx.await.unwrap_or(0)
     }
 
     /// Registers the connection in the `RemoteStateActor`.
@@ -1382,6 +1423,7 @@ enum ActorMessage {
     #[debug("ResolveRemote(..)")]
     ResolveRemote(
         EndpointAddr,
+        Option<TransportAddr>,
         oneshot::Sender<Result<(), AddressLookupFailed>>,
     ),
     #[debug("AddConnection(..)")]
@@ -1781,8 +1823,10 @@ impl Actor {
             ActorMessage::RelayMapChange => {
                 self.handle_relay_map_change();
             }
-            ActorMessage::ResolveRemote(addr, tx) => {
-                self.remote_map.resolve_remote(addr, tx).await;
+            ActorMessage::ResolveRemote(addr, preferred_transport_addr, tx) => {
+                self.remote_map
+                    .resolve_remote(addr, preferred_transport_addr, tx)
+                    .await;
             }
             ActorMessage::AddConnection(remote, conn, tx) => {
                 self.remote_map.add_connection(remote, conn, tx).await;
@@ -2171,6 +2215,7 @@ mod tests {
             secret_key,
             proxy_url: None,
             dns_resolver: DnsResolver::new(),
+            relay_transport_policy: Default::default(),
             server_config,
             tls_config: CaTlsConfig::default()
                 .client_config(crypto_provider.clone())
@@ -2588,6 +2633,7 @@ mod tests {
             secret_key: secret_key.clone(),
             address_lookup_user_data: None,
             dns_resolver,
+            relay_transport_policy: Default::default(),
             proxy_url: None,
             server_config,
             tls_config: CaTlsConfig::default()
@@ -2731,7 +2777,7 @@ mod tests {
             .map(|x| TransportAddr::Ip(x.addr));
         let endpoint_addr_2 = EndpointAddr::from_parts(endpoint_id_2, addrs);
         let addr = sock_1
-            .resolve_remote(endpoint_addr_2)
+            .resolve_remote(endpoint_addr_2, None)
             .await
             .unwrap()
             .unwrap();
@@ -2802,7 +2848,11 @@ mod tests {
                 SocketAddrV4::new([192, 0, 2, 1].into(), 12345).into(),
             )],
         );
-        let addr_2 = sock_1.resolve_remote(empty_addr_2).await.unwrap().unwrap();
+        let addr_2 = sock_1
+            .resolve_remote(empty_addr_2, None)
+            .await
+            .unwrap()
+            .unwrap();
 
         // Set a low max_idle_timeout so noq gives up on this quickly and our test does
         // not take forever.  You need to check the log output to verify this is really
@@ -2838,7 +2888,7 @@ mod tests {
                 .map(|x| TransportAddr::Ip(x.addr)),
         );
         let addr_2a = sock_1
-            .resolve_remote(correct_addr_2)
+            .resolve_remote(correct_addr_2, None)
             .await
             .unwrap()
             .unwrap();

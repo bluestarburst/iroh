@@ -6,6 +6,10 @@
 /// The port is "QUIC" typed on a phone keypad.
 pub const DEFAULT_RELAY_QUIC_PORT: u16 = 7842;
 
+/// The default QUIC port used by the Relay server to accept relay data-plane
+/// connections.
+pub const DEFAULT_RELAY_QUIC_DATA_PORT: u16 = DEFAULT_RELAY_QUIC_PORT + 1;
+
 /// The default HTTP port used by the Relay server.
 pub const DEFAULT_HTTP_PORT: u16 = 80;
 

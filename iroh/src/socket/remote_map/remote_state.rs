@@ -152,6 +152,10 @@ struct State {
     ///
     /// We only select a path once the path is functional in Noq.
     selected_path: Option<transports::FourTuple>,
+    /// Explicit path for connection-establishment packets only. This lets a
+    /// caller establish a replacement custom path without mutating the active
+    /// path of an existing connection to the same endpoint.
+    preferred_initial_path: Option<(transports::FourTuple, Instant)>,
     /// Time at which we should schedule the next holepunch attempt.
     scheduled_holepunch: Option<Instant>,
     /// When to next attempt opening paths in [`Self::pending_open_paths`].
@@ -196,6 +200,7 @@ impl RemoteStateActor {
                 paths: RemotePathState::new(metrics),
                 last_holepunch: None,
                 selected_path: Default::default(),
+                preferred_initial_path: Default::default(),
                 scheduled_holepunch: None,
                 scheduled_open_path: None,
                 pending_open_paths: VecDeque::new(),
@@ -362,8 +367,9 @@ impl RemoteStateActor {
             RemoteStateMessage::AddConnection(handle, tx) => {
                 self.handle_msg_add_connection(handle, tx);
             }
-            RemoteStateMessage::ResolveRemote(addrs, tx) => {
-                self.state.handle_msg_resolve_remote(addrs, tx);
+            RemoteStateMessage::ResolveRemote(addrs, preferred_transport_addr, tx) => {
+                self.state
+                    .handle_msg_resolve_remote(addrs, preferred_transport_addr, tx);
             }
             RemoteStateMessage::RemoteInfo(tx) => {
                 let addrs = self.state.paths.to_remote_addrs();
@@ -372,6 +378,23 @@ impl RemoteStateActor {
                     addrs,
                 };
                 tx.send(info).ok();
+            }
+            RemoteStateMessage::RetireConnectionsExcept {
+                keep_stable_id,
+                reason,
+                tx,
+            } => {
+                let mut retired = 0usize;
+                for (conn_id, connection) in &self.connections {
+                    if conn_id.0 == keep_stable_id {
+                        continue;
+                    }
+                    if let Some(connection) = connection.handle.upgrade() {
+                        connection.close(0u32.into(), &reason);
+                        retired += 1;
+                    }
+                }
+                tx.send(retired).ok();
             }
             RemoteStateMessage::NetworkChange { is_major } => {
                 self.handle_msg_network_change(is_major);
@@ -387,6 +410,7 @@ impl RemoteStateActor {
         conn: noq::Connection,
         tx: oneshot::Sender<PathStateReceiver>,
     ) {
+        self.state.preferred_initial_path = None;
         let (path_state_sender, path_state_receiver) = PathStateSender::new();
         self.state.metrics.num_conns_opened.inc();
         // Remove any conflicting stable_ids from the local state.
@@ -482,10 +506,33 @@ impl RemoteStateActor {
         if let Some(conn_state) = self.connections.remove(&conn_id) {
             self.state.metrics.num_conns_closed.inc();
             conn_state.path_state.close(closed);
+
+            // `RemotePathState` is shared by every QUIC connection to this
+            // endpoint. A remote process can restart with the same durable
+            // EndpointId while an independent connection to the replacement
+            // process is already live. In that case removing the retired
+            // connection must also retire paths that no remaining connection
+            // owns. Otherwise `selected_path` can continue pointing at a path
+            // that was open only on the old process generation, and every new
+            // ALPN handshake is sent to that stale path.
+            for remote_path in conn_state.paths.values() {
+                let still_open = self
+                    .connections
+                    .values()
+                    .any(|state| state.paths.values().any(|path| path == remote_path));
+                if !still_open {
+                    self.state.paths.abandoned_path(&remote_path.remote());
+                }
+            }
         }
         if self.connections.is_empty() {
             trace!("last connection closed - clearing selected_path");
             self.state.selected_path = None;
+        } else {
+            // A surviving connection may use a different relay or direct path.
+            // Re-select from live connection state immediately rather than
+            // retaining the removed generation's preferred path.
+            self.select_path();
         }
     }
 
@@ -796,7 +843,28 @@ impl State {
         // though we might not have a relay transport or ip-capable transport set up.
         // So these errors must not be fatal for this actor (or even this operation).
 
-        if let Some(addr) = self.selected_path.as_ref() {
+        let preferred_initial_path = match self.preferred_initial_path.as_ref() {
+            Some((addr, expires_at)) if *expires_at > Instant::now() => Some(addr.clone()),
+            Some(_) => {
+                self.preferred_initial_path = None;
+                None
+            }
+            None => None,
+        };
+
+        if let Some(addr) = preferred_initial_path.as_ref() {
+            trace!(
+                ?addr,
+                "sending connection-establishment datagram to preferred path"
+            );
+            let four_tuple = transports::FourTuple::from_remote(addr.remote());
+            if let Err(err) = send_datagram(&mut sender, four_tuple, transmit).await {
+                debug!(
+                    ?addr,
+                    "failed to send datagram on preferred initial path: {err:#}"
+                );
+            }
+        } else if let Some(addr) = self.selected_path.as_ref() {
             trace!(?addr, "sending datagram to selected path");
 
             // TODO(Frando): We might want to include a local IP here in the future, if we confidently
@@ -850,10 +918,33 @@ impl State {
     fn handle_msg_resolve_remote(
         &mut self,
         addrs: BTreeSet<TransportAddr>,
+        preferred_transport_addr: Option<TransportAddr>,
         tx: oneshot::Sender<Result<(), AddressLookupFailed>>,
     ) {
+        // An explicit EndpointAddr is generation-scoped addressing evidence.
+        // Prefer its relay for the connection-establishment packet when the
+        // caller did not choose another transport explicitly. A durable
+        // EndpointId can survive a process restart while a previously selected
+        // direct path still points at the retired process generation. Sending
+        // the new handshake through the freshly registered relay avoids that
+        // stale-path window; normal path selection and direct migration resume
+        // as soon as the connection is established.
+        let preferred_transport_addr = preferred_transport_addr
+            .or_else(|| addrs.iter().find(|candidate| candidate.is_relay()).cloned());
+        let preferred_transport_addr = preferred_transport_addr
+            .into_iter()
+            .flat_map(|addr| to_transports_addr(self.endpoint_id, [addr]))
+            .next();
         let addrs = to_transports_addr(self.endpoint_id, addrs);
         self.paths.insert_multiple(addrs, Source::App);
+        if let Some(preferred) = preferred_transport_addr
+            && self.paths.addrs().any(|candidate| candidate == &preferred)
+        {
+            self.preferred_initial_path = Some((
+                transports::FourTuple::from_remote(preferred),
+                Instant::now() + Duration::from_secs(12),
+            ));
+        }
         self.paths.resolve_remote(tx);
         // Start Address Lookup if we have no selected path.
         self.trigger_address_lookup();
@@ -1176,12 +1267,25 @@ pub(crate) enum RemoteStateMessage {
     #[debug("ResolveRemote(..)")]
     ResolveRemote(
         BTreeSet<TransportAddr>,
+        Option<TransportAddr>,
         oneshot::Sender<Result<(), AddressLookupFailed>>,
     ),
     /// Returns information about the remote.
     ///
     /// This currently only includes a list of all known transport addresses for the remote.
     RemoteInfo(oneshot::Sender<RemoteInfo>),
+    /// Closes every live connection for this remote except one concrete
+    /// connection generation.
+    ///
+    /// This is used when an application has authoritative evidence that the
+    /// remote process restarted while retaining its durable endpoint identity.
+    /// Protocol connections owned by the retired process must not outlive the
+    /// current admitted control connection.
+    RetireConnectionsExcept {
+        keep_stable_id: usize,
+        reason: Vec<u8>,
+        tx: oneshot::Sender<usize>,
+    },
     /// The network status has changed in some way
     NetworkChange { is_major: bool },
 }

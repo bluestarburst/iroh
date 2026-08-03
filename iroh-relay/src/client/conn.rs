@@ -13,15 +13,13 @@ use n0_future::{Sink, Stream};
 use tracing::trace;
 
 use super::KeyCache;
-#[cfg(not(wasm_browser))]
-use crate::client::streams::{MaybeTlsStream, ProxyStream};
 use crate::{
-    MAX_PACKET_SIZE,
+    ExportKeyingMaterial, MAX_PACKET_SIZE,
     http::ProtocolVersion,
     protos::{
         handshake,
         relay::{ClientToRelayMsg, Error as ProtoError, RelayToClientMsg},
-        streams::WsBytesFramed,
+        streams::BytesStreamSink,
     },
 };
 
@@ -69,36 +67,35 @@ pub enum RecvError {
 /// - A [`Sink`] for [`ClientToRelayMsg`] to send to the server.
 #[derive(derive_more::Debug)]
 pub(crate) struct Conn {
+    #[debug("relay byte stream")]
     #[cfg(not(wasm_browser))]
-    #[debug("tokio_websockets::WebSocketStream")]
-    pub(crate) conn: WsBytesFramed<MaybeTlsStream<ProxyStream>>,
+    pub(crate) conn: Pin<Box<dyn BytesStreamSink + Send>>,
+    #[debug("relay byte stream")]
     #[cfg(wasm_browser)]
-    #[debug("ws_stream_wasm::WsStream")]
-    pub(crate) conn: WsBytesFramed,
+    pub(crate) conn: Pin<Box<dyn BytesStreamSink>>,
     pub(crate) key_cache: KeyCache,
     pub(crate) protocol_version: ProtocolVersion,
 }
 
 impl Conn {
-    /// Constructs a new websocket connection, including the initial server handshake.
-    pub(crate) async fn new(
-        #[cfg(not(wasm_browser))] io: tokio_websockets::WebSocketStream<
-            MaybeTlsStream<ProxyStream>,
-        >,
-        #[cfg(wasm_browser)] io: ws_stream_wasm::WsStream,
+    /// Constructs a new relay connection, including the initial server handshake.
+    pub(crate) async fn new<IO>(
+        io: IO,
         key_cache: KeyCache,
         secret_key: &SecretKey,
         protocol_version: ProtocolVersion,
-    ) -> Result<Self, handshake::Error> {
-        let mut conn = WsBytesFramed { io };
-
+    ) -> Result<Self, handshake::Error>
+    where
+        IO: BytesStreamSink + ExportKeyingMaterial + Send + 'static,
+    {
         // exchange information with the server
+        let mut conn = io;
         trace!("server_handshake: started");
         handshake::clientside(&mut conn, secret_key).await?;
         trace!("server_handshake: done");
 
         Ok(Self {
-            conn,
+            conn: Box::pin(conn),
             key_cache,
             protocol_version,
         })
@@ -108,13 +105,15 @@ impl Conn {
     pub(crate) fn test(io: tokio::io::DuplexStream, protocol_version: ProtocolVersion) -> Self {
         use crate::protos::relay::MAX_FRAME_SIZE;
         Self {
-            conn: WsBytesFramed {
+            conn: Box::pin(crate::protos::streams::WsBytesFramed {
                 io: tokio_websockets::ClientBuilder::new()
                     .limits(
                         tokio_websockets::Limits::default().max_payload_len(Some(MAX_FRAME_SIZE)),
                     )
-                    .take_over(MaybeTlsStream::Test(io)),
-            },
+                    .take_over(crate::client::streams::MaybeTlsStream::<
+                        tokio::io::DuplexStream,
+                    >::Test(io)),
+            }),
             key_cache: KeyCache::test(),
             protocol_version,
         }

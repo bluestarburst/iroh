@@ -39,6 +39,8 @@ use std::{
 
 use backon::{Backoff, BackoffBuilder, ExponentialBuilder};
 use iroh_base::{EndpointId, RelayUrl, SecretKey};
+#[cfg(not(wasm_browser))]
+use iroh_relay::RelayTransportPolicy;
 use iroh_relay::{
     self as relay, PingTracker, RelayMap,
     client::{Client, ConnectError, RecvError, SendError},
@@ -208,6 +210,8 @@ struct RelayConnectionOptions {
     prefer_ipv6: Arc<AtomicBool>,
     tls_config: rustls::ClientConfig,
     auth_token: Option<String>,
+    #[cfg(not(wasm_browser))]
+    transport_policy: RelayTransportPolicy,
 }
 
 /// Possible reasons for a failed relay connection.
@@ -297,6 +301,8 @@ impl ActiveRelayActor {
             prefer_ipv6,
             tls_config,
             auth_token,
+            #[cfg(not(wasm_browser))]
+            transport_policy,
         } = opts;
 
         let mut builder = relay::client::ClientBuilder::new(
@@ -313,6 +319,10 @@ impl ActiveRelayActor {
 
         if let Some(token) = auth_token {
             builder = builder.auth_token(token);
+        }
+        #[cfg(not(wasm_browser))]
+        {
+            builder = builder.transport_policy(transport_policy);
         }
         builder
     }
@@ -876,6 +886,8 @@ pub(crate) struct Config {
     pub ipv6_reported: Arc<AtomicBool>,
     pub tls_config: rustls::ClientConfig,
     pub metrics: Arc<SocketMetrics>,
+    #[cfg(not(wasm_browser))]
+    pub relay_transport_policy: RelayTransportPolicy,
     /// Per-relay configuration. Consulted when starting a connection to
     /// look up the auth token and any future per-relay options.
     pub relay_map: RelayMap,
@@ -1246,6 +1258,8 @@ impl RelayActor {
             prefer_ipv6: self.config.ipv6_reported.clone(),
             tls_config: self.config.tls_config.clone(),
             auth_token,
+            #[cfg(not(wasm_browser))]
+            transport_policy: self.config.relay_transport_policy,
         };
 
         // TODO: Replace 64 with PER_CLIENT_SEND_QUEUE_DEPTH once that's unused
@@ -1437,6 +1451,7 @@ mod tests {
                     .client_config(default_provider())
                     .expect("infallible"),
                 auth_token: None,
+                transport_policy: Default::default(),
             },
             stop_token,
             metrics: Default::default(),

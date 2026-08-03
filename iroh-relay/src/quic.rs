@@ -8,6 +8,8 @@ use noq::{VarInt, crypto::rustls::QuicClientConfig};
 
 /// ALPN for our quic addr discovery
 pub const ALPN_QUIC_ADDR_DISC: &[u8] = b"/iroh-qad/0";
+/// ALPN for the relay data plane over QUIC.
+pub const ALPN_QUIC_RELAY: &[u8] = b"/iroh-relay/3";
 /// Endpoint close error code
 pub const QUIC_ADDR_DISC_CLOSE_CODE: VarInt = VarInt::from_u32(1);
 /// Endpoint close reason
@@ -25,7 +27,12 @@ pub(crate) mod server {
     use tracing::{Instrument, debug, info, info_span};
 
     use super::*;
-    use crate::server::Metrics;
+    use crate::{
+        client::quic_stream::QuicBytesFramed,
+        http::ProtocolVersion,
+        protos::relay::MAX_FRAME_SIZE,
+        server::{Metrics, http_server::RelayService},
+    };
 
     pub(crate) struct QuicServer {
         bind_addr: SocketAddr,
@@ -188,6 +195,110 @@ pub(crate) mod server {
         }
     }
 
+    pub(crate) struct RelayQuicServer {
+        bind_addr: SocketAddr,
+        cancel: CancellationToken,
+        handle: AbortOnDropHandle<()>,
+    }
+
+    impl RelayQuicServer {
+        pub(crate) fn handle(&self) -> ServerHandle {
+            ServerHandle {
+                cancel_token: self.cancel.clone(),
+            }
+        }
+
+        pub(crate) fn task_handle(&mut self) -> &mut AbortOnDropHandle<()> {
+            &mut self.handle
+        }
+
+        pub(crate) fn bind_addr(&self) -> SocketAddr {
+            self.bind_addr
+        }
+
+        pub(crate) fn spawn(
+            bind_addr: SocketAddr,
+            mut server_config: rustls::ServerConfig,
+            relay_service: RelayService,
+        ) -> Result<Self, QuicSpawnError> {
+            server_config.alpn_protocols = vec![crate::quic::ALPN_QUIC_RELAY.to_vec()];
+            let server_config = QuicServerConfig::try_from(server_config)?;
+            let mut server_config = noq::ServerConfig::with_crypto(Arc::new(server_config));
+            let transport_config =
+                Arc::get_mut(&mut server_config.transport).expect("not used yet");
+            transport_config
+                .max_concurrent_uni_streams(0_u8.into())
+                .max_concurrent_bidi_streams(4_u8.into())
+                .keep_alive_interval(Some(Duration::from_secs(25)));
+
+            let endpoint = noq::Endpoint::server(server_config, bind_addr)
+                .map_err(|err| e!(QuicSpawnError::EndpointServer, err))?;
+            let bind_addr = endpoint
+                .local_addr()
+                .map_err(|err| e!(QuicSpawnError::LocalAddr, err))?;
+
+            info!(?bind_addr, "QUIC relay server listening on");
+
+            let cancel = CancellationToken::new();
+            let cancel_accept_loop = cancel.clone();
+
+            let task = tokio::task::spawn(
+                async move {
+                    let mut set = JoinSet::new();
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = cancel_accept_loop.cancelled() => {
+                                break;
+                            }
+                            Some(res) = set.join_next() => {
+                                if let Err(err) = res {
+                                    if err.is_panic() {
+                                        panic!("quic relay task panicked: {err:#?}");
+                                    } else {
+                                        debug!("quic relay task cancelled: {err:#?}");
+                                    }
+                                }
+                            }
+                            res = endpoint.accept() => match res {
+                                Some(incoming) => {
+                                    let remote_addr = incoming.remote_address();
+                                    set.spawn(
+                                        handle_relay_connection(incoming, relay_service.clone())
+                                            .instrument(info_span!("quic-relay-conn", %remote_addr))
+                                    );
+                                }
+                                None => {
+                                    debug!("QUIC relay endpoint closed");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    endpoint.close(QUIC_ADDR_DISC_CLOSE_CODE, QUIC_ADDR_DISC_CLOSE_REASON);
+                    endpoint.wait_idle().await;
+                    set.abort_all();
+                    while !set.is_empty() {
+                        _ = set.join_next().await;
+                    }
+                }
+                .instrument(info_span!("quic-relay-endpoint")),
+            );
+            Ok(Self {
+                bind_addr,
+                cancel,
+                handle: AbortOnDropHandle::new(task),
+            })
+        }
+
+        pub(crate) async fn shutdown(mut self) {
+            self.cancel.cancel();
+            if !self.task_handle().is_finished() {
+                _ = self.task_handle().await;
+            }
+        }
+    }
+
     /// A handle for the Server side of QUIC address discovery.
     ///
     /// This does not allow access to the task but can communicate with it.
@@ -233,6 +344,38 @@ pub(crate) mod server {
             _ => {
                 debug!("peer disconnected with {connection_err:#}");
                 metrics.qad_connections_errored.inc();
+                Err(connection_err)
+            }
+        }
+    }
+
+    async fn handle_relay_connection(
+        incoming: noq::Incoming,
+        relay_service: RelayService,
+    ) -> Result<(), ConnectionError> {
+        debug!("incoming QUIC relay connection");
+        let connection = incoming.await?;
+        debug!("QUIC relay connection established");
+        let (send, recv) = connection.accept_bi().await?;
+        let io = QuicBytesFramed::new(send, recv, MAX_FRAME_SIZE);
+        if let Err(err) = relay_service
+            .accept_framed_relay_io(io, ProtocolVersion::V2)
+            .await
+        {
+            debug!("QUIC relay connection rejected: {err:#}");
+            connection.close(QUIC_ADDR_DISC_CLOSE_CODE, QUIC_ADDR_DISC_CLOSE_REASON);
+            return Ok(());
+        }
+        let connection_err = connection.closed().await;
+        match connection_err {
+            noq::ConnectionError::ApplicationClosed(ApplicationClose { error_code, .. })
+                if error_code == QUIC_ADDR_DISC_CLOSE_CODE =>
+            {
+                debug!("QUIC relay peer disconnected");
+                Ok(())
+            }
+            _ => {
+                debug!("QUIC relay peer disconnected with {connection_err:#}");
                 Err(connection_err)
             }
         }
