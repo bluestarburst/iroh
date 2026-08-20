@@ -172,6 +172,7 @@ struct State {
 
     /// The path selector used to pick the preferred path among the candidates.
     path_selector: Arc<dyn PathSelector>,
+    custom_transport_path_liveness: Option<crate::socket::CustomTransportPathLiveness>,
 }
 
 impl RemoteStateActor {
@@ -184,6 +185,7 @@ impl RemoteStateActor {
         metrics: Arc<SocketMetrics>,
         address_lookup: AddressLookupServices,
         path_selector: Arc<dyn PathSelector>,
+        custom_transport_path_liveness: Option<crate::socket::CustomTransportPathLiveness>,
     ) -> Self {
         Self {
             connections: FxHashMap::default(),
@@ -206,6 +208,7 @@ impl RemoteStateActor {
                 pending_open_paths: VecDeque::new(),
                 address_lookup_stream: None,
                 path_selector,
+                custom_transport_path_liveness,
             },
         }
     }
@@ -1084,6 +1087,16 @@ impl State {
             && let Err(e) = path.set_max_idle_timeout(Some(RELAY_PATH_MAX_IDLE_TIMEOUT))
         {
             debug!(?e, "failed to set relay path idle timeout");
+        }
+        if matches!(network_path, transports::FourTuple::Custom { .. })
+            && let Some(config) = self.custom_transport_path_liveness
+        {
+            if let Err(error) = path.set_keep_alive_interval(Some(config.keep_alive_interval)) {
+                debug!(?error, "failed to set custom path keepalive interval");
+            }
+            if let Err(error) = path.set_max_idle_timeout(Some(config.max_idle_timeout)) {
+                debug!(?error, "failed to set custom path idle timeout");
+            }
         }
 
         self.set_path_status(conn_id, path, &network_path);
