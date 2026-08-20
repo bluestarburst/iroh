@@ -138,6 +138,12 @@ pub(crate) const RELAY_PATH_MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(30)
 /// And finally we round that up to 8 for good measure.
 pub(crate) const MAX_MULTIPATH_PATHS: u32 = 8;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CustomTransportPathLiveness {
+    pub(crate) keep_alive_interval: Duration,
+    pub(crate) max_idle_timeout: Duration,
+}
+
 /// Maximum number of n0 QUIC NAT Traversal addresses that the QUIC stack should allow.
 ///
 /// This needs to be big enough to accommodate for machines which have lots of network
@@ -194,6 +200,7 @@ pub(crate) struct Options {
     pub(crate) metrics: EndpointMetrics,
     pub(crate) hooks: EndpointHooksList,
     pub(crate) path_selector: Arc<dyn PathSelector>,
+    pub(crate) custom_transport_path_liveness: Option<CustomTransportPathLiveness>,
     pub(crate) portmapper_config: portmapper::PortmapperConfig,
     pub(crate) net_report_config: crate::net_report::NetReportConfig,
 
@@ -891,6 +898,7 @@ impl EndpointInner {
             metrics,
             hooks,
             path_selector,
+            custom_transport_path_liveness,
             portmapper_config,
             net_report_config,
             static_config,
@@ -985,6 +993,7 @@ impl EndpointInner {
                 address_lookup.clone(),
                 shutdown_token.child_token(),
                 path_selector,
+                custom_transport_path_liveness,
                 span.clone(),
             )
         };
@@ -2220,6 +2229,7 @@ mod tests {
             metrics: Default::default(),
             hooks: Default::default(),
             path_selector: Arc::new(BiasedRttPathSelector::default()),
+            custom_transport_path_liveness: None,
             portmapper_config: Default::default(),
             net_report_config: Default::default(),
             static_config,
@@ -2637,6 +2647,7 @@ mod tests {
             metrics: Default::default(),
             hooks: Default::default(),
             path_selector: Arc::new(BiasedRttPathSelector::default()),
+            custom_transport_path_liveness: None,
             portmapper_config: Default::default(),
             net_report_config: Default::default(),
             static_config,

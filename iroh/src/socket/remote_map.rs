@@ -195,6 +195,7 @@ struct Tasks {
     poll_cleanup_waker: Option<Waker>,
     /// The path selector used by all [`RemoteStateActor`]s spawned by this map.
     path_selector: Arc<dyn PathSelector>,
+    custom_transport_path_liveness: Option<super::CustomTransportPathLiveness>,
     /// The tracing span for this endpoint, to be used as parent span for `RemoteStateActor` tasks.
     span: Span,
 }
@@ -207,6 +208,7 @@ impl RemoteMap {
         address_lookup: address_lookup::AddressLookupServices,
         shutdown_token: CancellationToken,
         path_selector: Arc<dyn PathSelector>,
+        custom_transport_path_liveness: Option<super::CustomTransportPathLiveness>,
         span: Span,
     ) -> Self {
         Self {
@@ -220,6 +222,7 @@ impl RemoteMap {
                 tasks: Default::default(),
                 poll_cleanup_waker: None,
                 path_selector,
+                custom_transport_path_liveness,
                 span,
             },
         }
@@ -386,6 +389,7 @@ impl Tasks {
             self.metrics.clone(),
             self.address_lookup.clone(),
             self.path_selector.clone(),
+            self.custom_transport_path_liveness,
         )
         .start(
             initial_msgs,
@@ -452,6 +456,7 @@ mod tests {
             address_lookup::AddressLookupServices::default(),
             shutdown_token.clone(),
             Arc::new(BiasedRttPathSelector::default()),
+            None,
             Span::none(),
         );
         let guards = (watchable, shutdown_token.clone().drop_guard());

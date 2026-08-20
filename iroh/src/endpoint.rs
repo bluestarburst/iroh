@@ -11,6 +11,8 @@
 //!
 //! [module docs]: crate
 
+#[cfg(feature = "unstable-custom-transports")]
+use std::time::Duration;
 use std::{collections::BTreeSet, net::SocketAddr, pin::Pin, sync::Arc};
 
 #[cfg(not(wasm_browser))]
@@ -148,6 +150,7 @@ pub struct Builder {
     max_tls_tickets: usize,
     hooks: EndpointHooksList,
     path_selector: Arc<dyn PathSelector>,
+    custom_transport_path_liveness: Option<socket::CustomTransportPathLiveness>,
     portmapper_config: PortmapperConfig,
     net_report_config: NetReportConfig,
     crypto_provider: Option<Arc<rustls::crypto::CryptoProvider>>,
@@ -218,6 +221,7 @@ impl Builder {
             transports,
             hooks: Default::default(),
             path_selector: Arc::new(BiasedRttPathSelector::default()),
+            custom_transport_path_liveness: None,
             portmapper_config: Default::default(),
             net_report_config: Default::default(),
             crypto_provider: None,
@@ -229,6 +233,12 @@ impl Builder {
 
     /// Binds the endpoint.
     pub async fn bind(self) -> Result<Endpoint, BindError> {
+        if self.custom_transport_path_liveness.is_some_and(|config| {
+            config.keep_alive_interval.is_zero()
+                || config.max_idle_timeout <= config.keep_alive_interval
+        }) {
+            return Err(e!(BindError::InvalidTransportConfig));
+        }
         let secret_key = self.secret_key.unwrap_or_else(SecretKey::generate);
 
         let crypto_provider = self
@@ -288,6 +298,7 @@ impl Builder {
             metrics,
             hooks: self.hooks,
             path_selector: self.path_selector,
+            custom_transport_path_liveness: self.custom_transport_path_liveness,
             portmapper_config: self.portmapper_config,
             net_report_config: self.net_report_config,
             static_config,
@@ -859,6 +870,25 @@ impl Builder {
     #[cfg(feature = "unstable-custom-transports")]
     pub fn path_selector(mut self, selector: Arc<dyn PathSelector>) -> Self {
         self.path_selector = selector;
+        self
+    }
+
+    /// Configures keepalive and idle timing for custom-transport QUIC paths.
+    ///
+    /// This does not change IP or relay path policy. It is useful for low-power
+    /// custom transports whose healthy idle interval is longer than iroh's
+    /// direct-network defaults. `max_idle_timeout` must be greater than a
+    /// non-zero `keep_alive_interval`, otherwise [`Builder::bind`] fails.
+    #[cfg(feature = "unstable-custom-transports")]
+    pub fn custom_transport_path_liveness(
+        mut self,
+        keep_alive_interval: Duration,
+        max_idle_timeout: Duration,
+    ) -> Self {
+        self.custom_transport_path_liveness = Some(socket::CustomTransportPathLiveness {
+            keep_alive_interval,
+            max_idle_timeout,
+        });
         self
     }
 }
@@ -2131,7 +2161,7 @@ mod tests {
     use tokio::sync::oneshot;
     use tracing::{Instrument, debug_span, error_span, info, info_span, instrument};
 
-    use super::Endpoint;
+    use super::{Builder, Endpoint};
     use crate::{
         RelayMap, RelayMode,
         address_lookup::memory::MemoryLookup,
@@ -2147,6 +2177,23 @@ mod tests {
     };
 
     const TEST_ALPN: &[u8] = b"n0/iroh/test";
+
+    #[cfg(feature = "unstable-custom-transports")]
+    #[tokio::test]
+    async fn custom_transport_path_liveness_rejects_invalid_timing() {
+        for (keep_alive_interval, max_idle_timeout) in [
+            (Duration::ZERO, Duration::from_secs(15)),
+            (Duration::from_secs(15), Duration::from_secs(15)),
+            (Duration::from_secs(16), Duration::from_secs(15)),
+        ] {
+            let error = Builder::empty()
+                .custom_transport_path_liveness(keep_alive_interval, max_idle_timeout)
+                .bind()
+                .await
+                .expect_err("invalid custom-path timing must be rejected");
+            assert_matches!(error, BindError::InvalidTransportConfig { .. });
+        }
+    }
 
     #[tokio::test]
     #[traced_test]
