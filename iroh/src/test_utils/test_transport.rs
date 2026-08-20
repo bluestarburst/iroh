@@ -503,6 +503,47 @@ mod tests {
         Ok(())
     }
 
+    /// Custom-path keepalives preserve an otherwise idle custom transport.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_custom_transport_path_liveness() -> Result<()> {
+        let network = TestNetwork::new();
+        let s1 = SecretKey::generate();
+        let s2 = SecretKey::generate();
+
+        let t1 = network.create_transport(s1.public())?;
+        let t2 = network.create_transport(s2.public())?;
+        let keep_alive_interval = Duration::from_millis(20);
+        let max_idle_timeout = Duration::from_millis(60);
+
+        let ep1 = endpoint_builder(s1, t1, EndpointConfig::default())
+            .custom_transport_path_liveness(keep_alive_interval, max_idle_timeout)
+            .bind()
+            .await?;
+        let ep2 = endpoint_builder(s2.clone(), t2, EndpointConfig::default())
+            .custom_transport_path_liveness(keep_alive_interval, max_idle_timeout)
+            .bind()
+            .await?;
+        let router = Router::builder(ep2).accept(ECHO_ALPN, Echo).spawn();
+
+        let conn = ep1
+            .connect(custom_only_addr(s2.public()), ECHO_ALPN)
+            .await?;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(
+            is_custom_selected(&conn),
+            "custom transport should remain selected after the idle window"
+        );
+        tokio::time::timeout(Duration::from_secs(2), verify_echo(&conn, b"after idle"))
+            .await
+            .anyerr()??;
+        conn.close(0u32.into(), b"done");
+        router.shutdown().await.anyerr()?;
+        Ok(())
+    }
+
     /// Test that custom transports can surface a local address per incoming packet.
     #[tokio::test]
     #[traced_test]
