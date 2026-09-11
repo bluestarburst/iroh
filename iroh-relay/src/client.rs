@@ -537,7 +537,11 @@ impl ClientBuilder {
     pub async fn connect(&self) -> Result<Client, ConnectError> {
         use crate::http::AUTH_TOKEN_URL_QUERY_PARAM;
 
-        let mut dial_url = (*self.url).clone();
+        let mut dial_url = crate::http::browser_relay_url((*self.url).clone()).map_err(|_| {
+            e!(ConnectError::InvalidWebsocketUrl {
+                url: (*self.url).clone()
+            })
+        })?;
         dial_url.set_path(RELAY_PATH);
         // The relay URL is exchanged with the http(s) scheme in tickets and similar.
         // We need to use the ws:// or wss:// schemes when connecting with websockets, though.
