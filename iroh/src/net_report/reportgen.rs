@@ -819,6 +819,8 @@ async fn run_https_probe(
 ) -> Result<HttpsProbeReport, MeasureHttpsLatencyError> {
     trace!("HTTPS probe start");
     let url = relay.join(RELAY_PROBE_PATH)?;
+    #[cfg(wasm_browser)]
+    let url = iroh_relay::http::browser_relay_url(url)?;
 
     // This should also use same connection establishment as relay client itself, which
     // needs to be more configurable so users can do more crazy things:

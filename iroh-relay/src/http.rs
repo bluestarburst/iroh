@@ -14,6 +14,22 @@ pub const RELAY_PATH: &str = "/relay";
 /// The HTTP path under which the relay allows doing latency queries for testing.
 pub const RELAY_PROBE_PATH: &str = "/ping";
 
+/// Convert a relay URL for the browser network stack without changing relay identity.
+/// Apple networking rejects TLS for absolute DNS hostnames ending in a dot.
+/// Keep that spelling in RelayUrl/tickets, but omit the DNS root marker when
+/// submitting an HTTPS probe or WebSocket dial. TLS validation stays enabled.
+#[cfg(any(wasm_browser, test))]
+pub fn browser_relay_url(mut url: url::Url) -> Result<url::Url, url::ParseError> {
+    if let Some(host) = url
+        .domain()
+        .and_then(|host| host.strip_suffix('.'))
+        .map(str::to_owned)
+    {
+        url.set_host(Some(&host))?;
+    }
+    Ok(url)
+}
+
 /// The HTTP header name for relay client authentication
 pub const CLIENT_AUTH_HEADER: HeaderName = HeaderName::from_static("x-iroh-relay-client-auth-v1");
 
@@ -116,6 +132,30 @@ mod tests {
     use strum::EnumCount;
 
     use super::*;
+
+    #[test]
+    fn browser_relay_url_preserves_everything_except_dns_root_marker() {
+        for (input, expected) in [
+            (
+                "https://use1-1.relay.n0.iroh.link./ping",
+                "https://use1-1.relay.n0.iroh.link/ping",
+            ),
+            (
+                "wss://relay.example.:8443/relay?token=fixture#fragment",
+                "wss://relay.example:8443/relay?token=fixture#fragment",
+            ),
+            ("https://relay.example/ping", "https://relay.example/ping"),
+            ("http://127.0.0.1:3340/ping", "http://127.0.0.1:3340/ping"),
+            ("ws://[::1]:3340/relay", "ws://[::1]:3340/relay"),
+        ] {
+            let original: url::Url = input.parse().unwrap();
+            let normalized = browser_relay_url(original.clone()).unwrap();
+            assert_eq!(normalized.as_str(), expected);
+            assert_eq!(original.as_str(), input);
+            assert_eq!(browser_relay_url(normalized.clone()).unwrap(), normalized);
+        }
+        assert!(browser_relay_url("https://./ping".parse().unwrap()).is_err());
+    }
 
     #[test]
     fn all_is_exhaustive() {
