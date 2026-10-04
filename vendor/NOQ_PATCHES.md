@@ -23,8 +23,28 @@ Local changes relative to that package:
   Dependency resolution is owned by the consuming root lockfile; upstream
   origin is recorded above.
 
-Iroh and Iroh relay depend on this directory through ordinary relative path
-dependencies. Noq-proto and Noq-udp retain their existing registry dependencies.
+Iroh and Iroh relay depend on these vendored packages through ordinary relative
+path dependencies. Noq also selects the same vendored Noq-proto. Noq-udp retains
+its existing registry dependency.
 This source is carried by a pinned Git revision; publishing Iroh to a registry
 would normalize path-plus-version dependencies back to registry packages and
 requires a separately fixed registry dependency chain.
+
+## Noq-proto 1.3.0 handshake probe repair
+
+`noq-proto/` carries the exact tested package source from the OpenRTC 2.9.4
+repair candidate, including the original MIT and Apache-2.0 license texts. Its
+upstream registry archive checksum is
+`7c1e5b6fe668491eca022f745a0a9402585626c73a7b839b3424ace15d6a9c8f`.
+
+The existing repair selects a handshake probe only in a packet space whose
+encryption keys remain available, clears obsolete loss probes, and declines
+packet construction after keys are discarded. No protocol source is changed
+by this delivery update. The local standalone workspace marker is retained.
+`Cargo.toml.orig` remains upstream metadata; the generated package manifest is
+authoritative. Consumer root locks own final resolution.
+
+This Git-source route carries the repair only when a consuming root selects
+this exact Iroh revision. Publishing Iroh or OpenRTC to crates.io does not
+export root patches or preserve vendored path dependencies automatically.
+A registry-only repaired dependency chain remains a separate release gate.

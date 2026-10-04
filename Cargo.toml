@@ -7,7 +7,7 @@ members = [
   "iroh/bench",
   "iroh-relay",
 ]
-exclude = ["vendor/noq"]
+exclude = ["vendor/noq", "vendor/noq-proto"]
 resolver = "2"
 
 [profile.release]
