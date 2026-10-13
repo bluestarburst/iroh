@@ -148,6 +148,7 @@ testdir = "0.10"
 cfg_aliases = { version = "0.2.2" }
 
 [features]
+native-tcp-socket-initializer = ["iroh-relay/native-tcp-socket-initializer"]
 # Native IP UDP bind/rebind initializer; does not cover relay/DNS/custom sockets.
 native-udp-socket-initializer = []
 default = ["metrics", "fast-apple-datapath", "portmapper", "tls-ring"]

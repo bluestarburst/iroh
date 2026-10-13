@@ -129,6 +129,7 @@ axum = { version = "0.8", features = ["ws"] }
 cfg_aliases = "0.2.2"
 
 [features]
+native-tcp-socket-initializer = []
 default = ["metrics", "tls-ring"]
 # Enables fetching TLS trust anchors from the operating system
 platform-verifier = ["dep:rustls-platform-verifier"]

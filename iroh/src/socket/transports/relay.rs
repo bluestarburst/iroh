@@ -408,6 +408,8 @@ mod tests {
             my_relay: HomeRelayWatch::default(),
             secret_key: SecretKey::from_bytes(&[7u8; 32]),
             dns_resolver: DnsResolver::new(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: None,
             proxy_url: None,
             ipv6_reported: Arc::new(AtomicBool::new(false)),
             tls_config: CaTlsConfig::insecure_skip_verify()

@@ -72,3 +72,8 @@ refresh/removal cases also pass again against this revision. They preserve the
 underlay inventory and encrypted peer identity. These retain their separate
 component scope; the new hook has not yet been composed with the Proxy helper
 inside an SDK-owned endpoint.
+
+A separate default-off relay TCP constructor input is now source-qualified in
+[native-relay-tcp-socket-initializer.md](native-relay-tcp-socket-initializer.md).
+It covers WebSocket relay/HTTP proxy TCP, while this UDP hook keeps its original
+scope. Their union still does not establish complete VPN underlay protection.

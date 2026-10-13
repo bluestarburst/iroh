@@ -37,10 +37,14 @@ use crate::{
 pub(crate) mod conn;
 #[cfg(not(wasm_browser))]
 pub(crate) mod quic_stream;
+#[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+mod socket_init;
 #[cfg(not(wasm_browser))]
 pub(crate) mod streams;
 #[cfg(not(wasm_browser))]
 mod tls;
+#[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+pub use socket_init::{NativeTcpSocketInitializer, NativeTcpSocketRef, SocketInitializationError};
 #[cfg(not(wasm_browser))]
 mod util;
 
@@ -121,6 +125,12 @@ pub enum ConnectError {
 #[allow(missing_docs)]
 #[non_exhaustive]
 pub enum DialError {
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    #[error(transparent)]
+    SocketInitialization {
+        #[error(std_err)]
+        source: SocketInitializationError,
+    },
     #[error("Invalid target port")]
     InvalidTargetPort {},
     #[error(transparent)]
@@ -159,6 +169,8 @@ pub enum DialError {
 /// Build a Client.
 #[derive(derive_more::Debug, Clone)]
 pub struct ClientBuilder {
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_tcp_socket_initializer: Option<NativeTcpSocketInitializer>,
     /// Default is None
     #[debug("address family selector callback")]
     address_family_selector: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
@@ -193,6 +205,8 @@ impl ClientBuilder {
         #[cfg(not(wasm_browser))] dns_resolver: DnsResolver,
     ) -> Self {
         ClientBuilder {
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_tcp_socket_initializer: None,
             address_family_selector: None,
             url: url.into(),
             tls_config: None,
@@ -205,6 +219,14 @@ impl ClientBuilder {
             transport_policy: RelayTransportPolicy::WebsocketRequired,
             quic_port: crate::defaults::DEFAULT_RELAY_QUIC_DATA_PORT,
         }
+    }
+
+    /// Configure each native relay/proxy TCP socket before connect. This partial
+    /// constructor capability is not complete VPN underlay protection.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub fn native_tcp_socket_initializer(mut self, initialize: NativeTcpSocketInitializer) -> Self {
+        self.native_tcp_socket_initializer = Some(initialize);
+        self
     }
 
     /// Sets a custom TLS config.
@@ -347,6 +369,11 @@ impl ClientBuilder {
             MaybeTlsStreamBuilder::new(dial_url.clone(), self.dns_resolver.clone(), tls_config)
                 .prefer_ipv6(self.prefer_ipv6())
                 .proxy_url(self.proxy_url.clone());
+        #[cfg(feature = "native-tcp-socket-initializer")]
+        {
+            builder =
+                builder.native_tcp_socket_initializer(self.native_tcp_socket_initializer.clone());
+        }
 
         let stream = builder.connect().await?;
         let local_addr = stream

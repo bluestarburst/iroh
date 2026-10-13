@@ -193,6 +193,9 @@ pub(crate) struct Options {
     pub(crate) relay_transport_policy: RelayTransportPolicy,
 
     /// Proxy configuration.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub(crate) native_relay_tcp_socket_initializer:
+        Option<iroh_relay::client::NativeTcpSocketInitializer>,
     pub(crate) proxy_url: Option<Url>,
 
     /// TLS configuration for HTTPS and non-iroh-QUIC connections.
@@ -918,6 +921,8 @@ impl EndpointInner {
             dns_resolver,
             #[cfg(not(wasm_browser))]
             relay_transport_policy,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer,
             proxy_url,
             server_config,
             tls_config,
@@ -965,6 +970,8 @@ impl EndpointInner {
             dns_resolver: dns_resolver.clone(),
             #[cfg(not(wasm_browser))]
             relay_transport_policy,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer,
             proxy_url: proxy_url.clone(),
             ipv6_reported: ipv6_reported.clone(),
             tls_config: tls_config.clone(),
@@ -2299,6 +2306,8 @@ mod tests {
                 TransportConfig::default_ipv6(),
             ],
             secret_key,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: None,
             proxy_url: None,
             dns_resolver: DnsResolver::new(),
             relay_transport_policy: Default::default(),
@@ -2724,6 +2733,8 @@ mod tests {
             address_lookup_user_data: None,
             dns_resolver,
             relay_transport_policy: Default::default(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: None,
             proxy_url: None,
             server_config,
             tls_config: CaTlsConfig::default()

@@ -147,6 +147,8 @@ pub struct Builder {
     excluded_ip_networks: Vec<ipnet::IpNet>,
     #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
     native_udp_bind_options: Option<netwatch::BindOptions>,
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_relay_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
     proxy_url: Option<Url>,
     ca_tls_config: Option<CaTlsConfig>,
     #[cfg(not(wasm_browser))]
@@ -222,6 +224,8 @@ impl Builder {
             excluded_ip_networks: Vec::new(),
             #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
             native_udp_bind_options: None,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: None,
             proxy_url: None,
             ca_tls_config: None,
             #[cfg(not(wasm_browser))]
@@ -303,6 +307,8 @@ impl Builder {
             native_udp_bind_options: self.native_udp_bind_options,
             secret_key,
             address_lookup_user_data: self.address_lookup_user_data,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: self.native_relay_tcp_socket_initializer,
             proxy_url: self.proxy_url,
             #[cfg(not(wasm_browser))]
             dns_resolver,
@@ -701,6 +707,23 @@ impl Builder {
                 })
             },
         ));
+        self
+    }
+
+    /// Configure native WebSocket relay/proxy TCP sockets before connect.
+    /// The existing relay actor retains this constructor input across dials.
+    /// DNS, QUIC relay, gateway and custom carriers are outside this partial input.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub fn native_relay_tcp_socket_initializer(
+        mut self,
+        initialize: impl for<'a> Fn(iroh_relay::client::NativeTcpSocketRef<'a>) -> std::io::Result<()>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.native_relay_tcp_socket_initializer = Some(
+            iroh_relay::client::NativeTcpSocketInitializer::new(initialize),
+        );
         self
     }
 
@@ -2236,7 +2259,12 @@ mod tests {
     use tokio::sync::oneshot;
     use tracing::{Instrument, debug_span, error_span, info, info_span, instrument};
 
-    use super::{Builder, Endpoint};
+    #[cfg(any(
+        feature = "unstable-custom-transports",
+        all(unix, feature = "native-tcp-socket-initializer")
+    ))]
+    use super::Builder;
+    use super::Endpoint;
     use crate::{
         RelayMap, RelayMode,
         address_lookup::memory::MemoryLookup,
@@ -2546,18 +2574,46 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn endpoint_send_relay() -> Result {
-        let (relay_map, _relay_url, _guard) = run_relay_server().await?;
-        let client = Endpoint::builder(presets::Minimal)
+        let (relay_map, relay_url, _guard) = run_relay_server().await?;
+        // Exercise the endpoint constructor -> retained relay actor -> dialer
+        // boundary, which standalone relay-client tests cannot reach.
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        let counts = [
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        ];
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        let configure =
+            |builder: Builder, counter: std::sync::Arc<std::sync::atomic::AtomicUsize>| {
+                builder
+                    .clear_ip_transports()
+                    .native_relay_tcp_socket_initializer(move |socket| {
+                        use std::os::fd::AsFd;
+                        let duplicate =
+                            std::net::TcpStream::from(socket.as_fd().try_clone_to_owned()?);
+                        assert!(
+                            duplicate.peer_addr().is_err(),
+                            "relay actor configured an already connected socket"
+                        );
+                        duplicate.set_ttl(31)?;
+                        assert_eq!(duplicate.ttl()?, 31);
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    })
+            };
+        let client_builder = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Custom(relay_map.clone()))
-            .ca_tls_config(CaTlsConfig::insecure_skip_verify())
-            .bind()
-            .await?;
-        let server = Endpoint::builder(presets::Minimal)
+            .ca_tls_config(CaTlsConfig::insecure_skip_verify());
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        let client_builder = configure(client_builder, counts[0].clone());
+        let client = client_builder.bind().await?;
+        let server_builder = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Custom(relay_map))
             .ca_tls_config(CaTlsConfig::insecure_skip_verify())
-            .alpns(vec![TEST_ALPN.to_vec()])
-            .bind()
-            .await?;
+            .alpns(vec![TEST_ALPN.to_vec()]);
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        let server_builder = configure(server_builder, counts[1].clone());
+        let server = server_builder.bind().await?;
 
         let task = tokio::spawn({
             let server = server.clone();
@@ -2576,8 +2632,10 @@ mod tests {
             }
         });
 
-        let addr = server.addr();
-        let conn = client.connect(addr, TEST_ALPN).await?;
+        let addr = crate::EndpointAddr::new(server.id()).with_relay_url(relay_url);
+        let conn = tokio::time::timeout(Duration::from_secs(10), client.connect(addr, TEST_ALPN))
+            .await
+            .std_context("relay-only policy connection timed out")??;
         let (mut send, mut recv) = conn.open_bi().await.anyerr()?;
         send.write_all(b"Hello, world!").await.anyerr()?;
         send.finish().anyerr()?;
@@ -2590,6 +2648,13 @@ mod tests {
         server.close().await;
 
         assert_eq!(&data, b"Hello, world!");
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        for count in counts {
+            assert!(
+                count.load(std::sync::atomic::Ordering::SeqCst) > 0,
+                "endpoint constructor policy did not reach its live relay actor"
+            );
+        }
 
         Ok(())
     }
