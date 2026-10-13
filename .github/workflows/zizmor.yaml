@@ -24,8 +24,9 @@ jobs:
       - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
           tool: zizmor
-      # whole repo, not just workflows/ -- dependabot.yml is audited too
-      - run: zizmor --offline .
+      # Audit every executable owned workflow/action plus Dependabot configuration.
+      # Vendored upstream workflow examples do not execute in this repository.
+      - run: zizmor --offline .github/workflows .github/dependabot.yml
 
   pinact:
     # Fails if a pinned SHA drifts from its version comment, or is younger

@@ -25,3 +25,12 @@ locked offline graph resolution for the native host. Fresh remote dependency
 policy, spelling, compilation and runtime results remain pending. The old
 PKARR/HTTP receipts describe the earlier cohort and do not prove runtime
 behavior after this dependency upgrade. VPN activation stays disabled.
+
+
+Remote run 38439495955 passed dependency advisories, bans, licenses and sources,
+repository formatting, optional-dependency absence and Linux minimal crates.
+Its spelling check showed that exclusions require matching complete relative
+paths; the glob is corrected. Workflow lint had scanned copied upstream
+workflow examples. It now targets all owned workflows/actions and Dependabot
+configuration, keeping the complete executable workflow surface under audit.
+Fresh lint/spelling and runtime results for the corrected head remain pending.
