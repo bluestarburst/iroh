@@ -1538,12 +1538,14 @@ mod tests {
     #[cfg(not(wasm_browser))]
     #[tokio::test]
     async fn ip_exclusions_fence_existing_sender_clones_at_kernel_boundary() {
-        use crate::ip_transport_policy::IpTransportPolicy;
         use std::net::Ipv4Addr;
+
         use tokio::{
             net::UdpSocket,
             time::{Duration, timeout},
         };
+
+        use crate::ip_transport_policy::IpTransportPolicy;
         let metrics = EndpointMetrics::default();
         let TransportConfig::Ip { config, .. } = TransportConfig::default_ipv4() else {
             unreachable!()
@@ -1615,9 +1617,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires the explicit isolated Linux underlay helper gate"]
     async fn ip_exclusions_fence_real_tun_capture() {
-        use crate::ip_transport_policy::IpTransportPolicy;
         use std::{io::Write, path::PathBuf};
+
         use tokio::time::{Duration, timeout};
+
+        use crate::ip_transport_policy::IpTransportPolicy;
         let fixture = PathBuf::from(
             std::env::var("PROXY_VPN_UNDERLAY_GATE_DIR")
                 .expect("run through the isolated Linux underlay gate"),

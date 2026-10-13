@@ -1,5 +1,4 @@
 //! Public builder-to-kernel behavior, using the existing socket actor for rebind.
-use crate::{Endpoint, endpoint::presets};
 use std::io;
 #[cfg(target_os = "linux")]
 use std::{
@@ -9,6 +8,8 @@ use std::{
     },
     time::Duration,
 };
+
+use crate::{Endpoint, endpoint::presets};
 
 #[tokio::test]
 async fn native_udp_initializer_denial_refuses_endpoint_binding() {
@@ -50,12 +51,14 @@ async fn native_udp_initializer_denial_refuses_endpoint_binding() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_udp_initializer_reaches_kernel_after_actor_rebind_and_denies_replacement() {
-    use crate::{EndpointAddr, SecretKey};
-    use nix::sys::socket::{ControlMessageOwned, MsgFlags, recvmsg, setsockopt, sockopt};
     use std::{
         net::{Ipv4Addr, UdpSocket},
         os::fd::{AsFd, AsRawFd},
     };
+
+    use nix::sys::socket::{ControlMessageOwned, MsgFlags, recvmsg, setsockopt, sockopt};
+
+    use crate::{EndpointAddr, SecretKey};
 
     fn receiver() -> UdpSocket {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();

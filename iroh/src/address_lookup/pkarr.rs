@@ -727,14 +727,16 @@ impl PkarrRelayClient {
     feature = "native-tcp-socket-initializer"
 ))]
 mod native_socket_policy_tests {
-    use super::*;
-    use crate::endpoint::{RelayMode, presets};
-    use n0_future::StreamExt;
     use std::{
         os::fd::AsFd,
         sync::atomic::{AtomicUsize, Ordering},
     };
+
+    use n0_future::StreamExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+    use crate::endpoint::{RelayMode, presets};
 
     #[tokio::test]
     async fn endpoint_policy_reaches_pkarr_publish_and_resolve() {

@@ -1,13 +1,15 @@
-use super::*;
 use std::{
     net::Ipv4Addr,
     os::fd::AsFd,
     sync::atomic::{AtomicUsize, Ordering},
 };
+
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+
+use super::*;
 
 #[tokio::test]
 async fn tcp_policy_reaches_each_actual_attempt_before_connect() {

@@ -1,11 +1,12 @@
 //! Native IP eligibility shared by address publication, QNT and final UDP I/O.
 //! This is a route-local input, not a peer/session or retry owner.
-use ipnet::IpNet;
 use std::{
     io,
     net::IpAddr,
     sync::{Arc, RwLock, RwLockReadGuard},
 };
+
+use ipnet::IpNet;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct IpTransportPolicy(Arc<RwLock<Vec<IpNet>>>);

@@ -94,6 +94,8 @@ pub(crate) mod quic;
 #[cfg(not(wasm_browser))]
 pub use bind::{BindOpts, InvalidSocketAddr, ToSocketAddr};
 pub use hooks::{AfterHandshakeOutcome, BeforeConnectOutcome, EndpointHooks};
+#[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+pub use netwatch::{IpFamily as NativeUdpIpFamily, SocketRef as NativeUdpSocketRef};
 
 #[cfg(feature = "qlog")]
 pub use self::quic::{QlogConfig, QlogFactory, QlogFileFactory};
@@ -122,9 +124,6 @@ pub use self::{
 use crate::socket::transports::IpConfig;
 use crate::socket::transports::TransportConfig;
 pub use crate::{net_report::NetReportConfig, portmapper::PortmapperConfig};
-
-#[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
-pub use netwatch::{IpFamily as NativeUdpIpFamily, SocketRef as NativeUdpSocketRef};
 
 /// Builder for [`Endpoint`].
 ///

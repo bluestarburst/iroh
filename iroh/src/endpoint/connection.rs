@@ -1653,9 +1653,10 @@ mod tests {
 
 #[cfg(all(test, not(wasm_browser), with_crypto_provider))]
 mod ip_exclusion_tests {
+    use std::time::Duration;
+
     use super::Connection;
     use crate::{Endpoint, endpoint::presets};
-    use std::time::Duration;
     const TEST_ALPN: &[u8] = b"ip-policy-qualification";
     #[cfg(not(wasm_browser))]
     #[tokio::test]
@@ -1887,6 +1888,8 @@ mod ip_exclusion_tests {
     #[cfg(feature = "unstable-custom-transports")]
     #[tokio::test]
     async fn ip_exclusions_retire_a_selected_ip_path_without_closing_the_peer() {
+        use std::sync::Arc;
+
         use crate::{
             EndpointAddr, TransportAddr,
             socket::{
@@ -1894,7 +1897,6 @@ mod ip_exclusion_tests {
                 transports::AddrKind,
             },
         };
-        use std::sync::Arc;
         let builder = || {
             Endpoint::builder(presets::Minimal)
                 .clear_ip_transports()
