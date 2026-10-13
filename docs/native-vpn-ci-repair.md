@@ -34,3 +34,29 @@ paths; the glob is corrected. Workflow lint had scanned copied upstream
 workflow examples. It now targets all owned workflows/actions and Dependabot
 configuration, keeping the complete executable workflow surface under audit.
 Fresh lint/spelling and runtime results for the corrected head remain pending.
+
+
+## Public-fork runner assignment
+
+Run 38439877810 passed both native minimal-crate jobs, but its main Linux and
+Windows matrices requested Blacksmith labels and the Mac matrix requested
+upstream self-hosted ARM64 labels. Job metadata reported queued with no assigned
+runner. These jobs had not begun compilation and must not be described as
+running runtime tests.
+
+The reusable runner selector now emits standard GitHub-hosted labels when the
+repository owner differs from its configured upstream runner organization.
+Linux uses ubuntu-latest; Windows uses windows-latest. The Mac matrix uses
+macos-14 (ARM64), and direct Linux Android/patchbay jobs use ubuntu-latest in
+forks. All matrix cells and commands remain selected. Upstream organization
+routing retains its existing runner fleet. The actual selector shell was
+executed for Linux, Windows and Mac inputs: core and all 16 overflow slots had
+the correct hosted label, without an upstream availability query. Changed YAML
+files parse and git diff --check passes. Fresh remote runner assignment and
+build/runtime proof are still required.
+
+The separately credentialed upstream netsim job still requires its own
+upstream runner/services; this change does not provision those services or
+count a queued external-service lane as passed. Public GitHub standard runner
+labels and ARM64 Mac availability were checked against:
+https://docs.github.com/en/actions/reference/runners/github-hosted-runners.

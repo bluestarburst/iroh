@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-13",
+  "precedingRun": "https://github.com/bluestarburst/iroh/actions/runs/38439877810",
+  "observedQueuedJobs": {
+    "115443472843": [
+      "blacksmith-4vcpu-ubuntu-2204"
+    ],
+    "115443472840": [
+      "self-hosted",
+      "macOS",
+      "ARM64"
+    ],
+    "115443509079": [
+      "blacksmith-4vcpu-windows-2025"
+    ]
+  },
+  "runnerAssignedBeforeFix": false,
+  "sourceSha256": {
+    ".github/workflows/pick-runner.yml": "aeaabd9770586901f4dec89117f2e3a3322bc879a4eea377e04b5bb3501278d8",
+    ".github/workflows/tests.yaml": "26ab400182c3720b97cb817e9e1f16e0a56cdfa295332db9bf51cb81aaf33b1a",
+    ".github/workflows/ci.yml": "8855605c36c1ab7c1f7ce9410932ccb6592baf5144b972bc34487b6a193a4b2b",
+    ".github/workflows/patchbay.yml": "e131403eb81884d3924a0f6d860d040a67a5a5c4513439566ec1138f38a0617d"
+  },
+  "shellChecks": [
+    "Linux: core and 16 slots ubuntu-latest",
+    "Windows: core and 16 slots windows-latest",
+    "Mac: core and 16 slots macos-14"
+  ],
+  "yamlParse": "passed all four changed files",
+  "runtime": "pending fresh remote runner assignment and compilation",
+  "externalNetsim": "requires upstream runner/services; not qualified",
+  "vpnEnabled": false
+}

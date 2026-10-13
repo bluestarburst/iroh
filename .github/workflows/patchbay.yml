@@ -25,7 +25,7 @@ jobs:
   patchbay_tests:
     name: Patchbay Tests
     timeout-minutes: 15
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ${{ fromJSON(github.repository_owner == 'n0-computer' && '["self-hosted","linux","X64"]' || '["ubuntu-latest"]') }}
     env:
       RUSTC_WRAPPER: "sccache"
     steps:
