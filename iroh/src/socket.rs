@@ -170,6 +170,8 @@ impl From<mpsc::error::SendError<RemoteStateMessage>> for RemoteStateActorStoppe
 pub(crate) struct Options {
     /// The configuration for the different transports.
     pub(crate) transports: Vec<TransportConfig>,
+    #[cfg(not(wasm_browser))]
+    pub(crate) excluded_ip_networks: Vec<ipnet::IpNet>,
 
     /// Secret key for this endpoint.
     pub(crate) secret_key: SecretKey,
@@ -362,6 +364,8 @@ pub(crate) struct Socket {
     // - Networking Info
     /// Our discovered direct addresses.
     direct_addrs: DiscoveredDirectAddrs,
+    #[cfg(not(wasm_browser))]
+    ip_policy: crate::ip_transport_policy::IpTransportPolicy,
     /// Our latest net-report
     net_report: Watchable<(Option<Report>, UpdateReason)>,
     /// If the last net_report report, reports IPv6 to be available.
@@ -517,11 +521,27 @@ impl Socket {
         self.home_relay_watch.clone()
     }
 
-    /// Stores a new set of direct addresses.
-    ///
-    /// If the direct addresses have changed from the previous set, they are published to
-    /// the address lookup system.
+    #[cfg(not(wasm_browser))]
+    fn apply_ip_exclusions(&self, networks: Vec<ipnet::IpNet>) -> io::Result<()> {
+        self.ip_policy.replace(networks)?;
+        self.store_direct_addresses(self.direct_addrs.addrs.get());
+        Ok(())
+    }
+
+    /// Stores the shared direct-address set used by publication and QNT.
     fn store_direct_addresses(&self, addrs: BTreeSet<DirectAddr>) {
+        #[cfg(not(wasm_browser))]
+        let policy = self.ip_policy.read();
+        #[cfg(not(wasm_browser))]
+        let addrs = match &policy {
+            Ok(policy) => addrs
+                .into_iter()
+                .filter(|addr| policy.allows(addr.addr.ip()))
+                .collect(),
+            Err(_) => BTreeSet::new(),
+        };
+        // Keep the native read guard through this write and publication. A
+        // policy update cannot race a stale local/QNT candidate publication.
         let updated = self.direct_addrs.update(addrs);
         if updated {
             self.publish_my_addr();
@@ -887,6 +907,8 @@ impl EndpointInner {
         let Options {
             secret_key,
             transports: transport_configs,
+            #[cfg(not(wasm_browser))]
+            excluded_ip_networks,
             address_lookup_user_data,
             #[cfg(not(wasm_browser))]
             dns_resolver,
@@ -949,6 +971,8 @@ impl EndpointInner {
         let shutdown_state = ShutdownState::default();
         let shutdown_token = shutdown_state.at_endpoint_closed.child_token();
 
+        #[cfg(not(wasm_browser))]
+        let ip_policy = crate::ip_transport_policy::IpTransportPolicy::new(excluded_ip_networks);
         let transports = Transports::bind(
             &transport_configs,
             relay_actor_config,
@@ -956,6 +980,12 @@ impl EndpointInner {
             shutdown_token.child_token(),
         )
         .map_err(|err| e!(BindError::Sockets, err))?;
+        #[cfg(not(wasm_browser))]
+        let transports = {
+            let mut transports = transports;
+            transports.set_ip_policy(ip_policy.clone());
+            transports
+        };
 
         if let Some(v4_port) = transports.local_addrs().into_iter().find_map(|t| {
             if let transports::Addr::Ip(SocketAddr::V4(addr)) = t {
@@ -992,7 +1022,11 @@ impl EndpointInner {
                 direct_addrs.addrs.watch(),
                 address_lookup.clone(),
                 shutdown_token.child_token(),
-                path_selector,
+                remote_map::PathOptions {
+                    selector: path_selector,
+                    #[cfg(not(wasm_browser))]
+                    ip_policy: ip_policy.clone(),
+                },
                 custom_transport_path_liveness,
                 span.clone(),
             )
@@ -1010,6 +1044,8 @@ impl EndpointInner {
             address_lookup_user_data: RwLock::new(address_lookup_user_data),
             configured_addrs: RwLock::new(configured_addrs),
             direct_addrs,
+            #[cfg(not(wasm_browser))]
+            ip_policy,
             net_report: Watchable::new((None, UpdateReason::None)),
             #[cfg(not(wasm_browser))]
             dns_resolver: dns_resolver.clone(),
@@ -1299,6 +1335,21 @@ impl EndpointInner {
         removed
     }
 
+    /// Commits one host IP policy input through the existing socket actor.
+    #[cfg(not(wasm_browser))]
+    pub(crate) async fn set_excluded_ip_networks(
+        &self,
+        networks: Vec<ipnet::IpNet>,
+    ) -> io::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.actor_sender
+            .send(ActorMessage::IpExclusions(networks, tx))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "endpoint actor stopped"))?;
+        rx.await
+            .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "endpoint actor stopped"))?
+    }
+
     /// Call to notify the system of potential network changes.
     pub(crate) async fn network_change(&self) {
         self.actor_sender
@@ -1422,6 +1473,8 @@ impl EndpointInner {
 #[derive(derive_more::Debug)]
 #[allow(clippy::enum_variant_names)]
 enum ActorMessage {
+    #[cfg(not(wasm_browser))]
+    IpExclusions(Vec<ipnet::IpNet>, oneshot::Sender<io::Result<()>>),
     NetworkChange,
     RelayMapChange,
     #[debug("ResolveRemote(..)")]
@@ -1821,6 +1874,16 @@ impl Actor {
     /// Returns `true` if it was a shutdown.
     async fn handle_actor_message(&mut self, msg: ActorMessage) {
         match msg {
+            #[cfg(not(wasm_browser))]
+            ActorMessage::IpExclusions(networks, tx) => {
+                let result = self.sock.apply_ip_exclusions(networks);
+                if result.is_ok() {
+                    let (report, _) = self.sock.net_report.get();
+                    self.update_direct_addresses(report.as_ref());
+                    self.remote_map.on_ip_policy_change().await;
+                }
+                let _ = tx.send(result);
+            }
             ActorMessage::NetworkChange => {
                 self.network_monitor.network_change().await.ok();
             }
@@ -2212,6 +2275,7 @@ mod tests {
         };
         let server_config = static_config.create_server_config(vec![]);
         Options {
+            excluded_ip_networks: Vec::new(),
             transports: vec![
                 TransportConfig::default_ipv4(),
                 TransportConfig::default_ipv6(),
@@ -2631,6 +2695,7 @@ mod tests {
 
         let dns_resolver = DnsResolver::new();
         let opts = Options {
+            excluded_ip_networks: Vec::new(),
             transports: vec![
                 TransportConfig::default_ipv4(),
                 TransportConfig::default_ipv6(),

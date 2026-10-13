@@ -118,6 +118,8 @@ struct State {
     ///
     /// These are our local addresses and any reflexive transport addresses.
     local_direct_addrs: n0_watcher::Direct<BTreeSet<DirectAddr>>,
+    #[cfg(not(wasm_browser))]
+    ip_policy: crate::ip_transport_policy::IpTransportPolicy,
     /// The mapped addresses for this endpoint.
     mapped_addrs: MappedAddrs,
     /// Address lookup service, cloned from the socket.
@@ -183,6 +185,7 @@ impl RemoteStateActor {
         metrics: Arc<SocketMetrics>,
         address_lookup: AddressLookupServices,
         path_selector: Arc<dyn PathSelector>,
+        #[cfg(not(wasm_browser))] ip_policy: crate::ip_transport_policy::IpTransportPolicy,
         custom_transport_path_liveness: Option<crate::socket::CustomTransportPathLiveness>,
     ) -> Self {
         Self {
@@ -191,6 +194,8 @@ impl RemoteStateActor {
                 endpoint_id,
                 metrics: metrics.clone(),
                 local_direct_addrs,
+                #[cfg(not(wasm_browser))]
+                ip_policy,
                 mapped_addrs,
                 address_lookup,
                 connections_close: Default::default(),
@@ -361,6 +366,46 @@ impl RemoteStateActor {
     async fn handle_message(&mut self, msg: RemoteStateMessage) {
         // trace!("handling message");
         match msg {
+            #[cfg(not(wasm_browser))]
+            RemoteStateMessage::IpPolicyChanged => {
+                if self
+                    .state
+                    .selected_path
+                    .as_ref()
+                    .is_some_and(|p| !self.state.ip_path_allowed(p))
+                {
+                    self.state.selected_path = None;
+                    for state in self.connections.values() {
+                        state.path_state.clear_selected();
+                    }
+                }
+                if self
+                    .state
+                    .preferred_initial_path
+                    .as_ref()
+                    .is_some_and(|(p, _)| !self.state.ip_path_allowed(p))
+                {
+                    self.state.preferred_initial_path = None;
+                }
+                // Reuse this actor's existing path-opening machinery for known
+                // eligible IP alternatives; no peer reconnect or new timer.
+                let paths = self
+                    .state
+                    .paths
+                    .addrs()
+                    .filter(|a| matches!(a, transports::Addr::Ip(_)))
+                    .cloned()
+                    .map(transports::FourTuple::from_remote)
+                    .filter(|p| self.state.ip_path_allowed(p))
+                    .collect::<Vec<_>>();
+                for path in paths {
+                    self.open_path_on_all_conns(&path);
+                }
+                self.update_local_direct_address();
+                self.select_path();
+                self.trigger_holepunching();
+            }
+
             RemoteStateMessage::SendDatagram(sender, transmit) => {
                 self.state.handle_msg_send_datagram(sender, transmit).await;
             }
@@ -698,7 +743,12 @@ impl RemoteStateActor {
     fn select_path(&mut self) {
         let current_path = self.state.selected_path.as_ref();
         let selected_addr = {
-            let ctx = PathSelectionContext::new(current_path, &self.connections);
+            let ctx = PathSelectionContext::new(
+                current_path,
+                &self.connections,
+                #[cfg(not(wasm_browser))]
+                &self.state.ip_policy,
+            );
             self.state.path_selector.select(&ctx).selected().cloned()
         };
 
@@ -834,6 +884,13 @@ impl RemoteStateActor {
 }
 
 impl State {
+    #[cfg(not(wasm_browser))]
+    fn ip_path_allowed(&self, path: &transports::FourTuple) -> bool {
+        self.ip_policy
+            .read()
+            .is_ok_and(|policy| policy.allows_path(path))
+    }
+
     /// Handles [`RemoteStateMessage::SendDatagram`].
     async fn handle_msg_send_datagram(
         &mut self,
@@ -1139,6 +1196,11 @@ impl State {
         conn: &noq::Connection,
         open_4tuple: &transports::FourTuple,
     ) {
+        #[cfg(not(wasm_browser))]
+        if !self.ip_path_allowed(open_4tuple) {
+            return;
+        }
+
         // Only the client opens paths; the server receives them via
         // QUIC frames and reacts to PathOpened events.
         if conn.side().is_server() {
@@ -1241,6 +1303,8 @@ fn send_datagram<'a>(
 /// Messages to send to the [`RemoteStateActor`].
 #[derive(derive_more::Debug)]
 pub(crate) enum RemoteStateMessage {
+    #[cfg(not(wasm_browser))]
+    IpPolicyChanged,
     /// Sends a datagram to all known paths.
     ///
     /// Used to send QUIC Initial packets.  If there is no working direct path this will
@@ -1401,6 +1465,8 @@ impl ConnectionState {
 pub struct PathSelectionContext<'a> {
     current: Option<&'a transports::FourTuple>,
     source: PathsSource<'a>,
+    #[cfg(not(wasm_browser))]
+    ip_policy: Option<&'a crate::ip_transport_policy::IpTransportPolicy>,
 }
 
 /// Either a reference to live connection state, or a synthesized list of paths
@@ -1417,10 +1483,13 @@ impl<'a> PathSelectionContext<'a> {
     fn new(
         current: Option<&'a transports::FourTuple>,
         connections: &'a FxHashMap<ConnId, ConnectionState>,
+        #[cfg(not(wasm_browser))] ip_policy: &'a crate::ip_transport_policy::IpTransportPolicy,
     ) -> Self {
         Self {
             current,
             source: PathsSource::Live(connections),
+            #[cfg(not(wasm_browser))]
+            ip_policy: Some(ip_policy),
         }
     }
 
@@ -1433,12 +1502,24 @@ impl<'a> PathSelectionContext<'a> {
         Self {
             current,
             source: PathsSource::Test(paths),
+            #[cfg(not(wasm_browser))]
+            ip_policy: None,
         }
     }
 
     /// The path currently considered the preferred path to the remote endpoint, if any.
     pub fn current(&self) -> Option<&transports::FourTuple> {
+        #[cfg(not(wasm_browser))]
+        if self.current.is_some_and(|p| !self.path_allowed(p)) {
+            return None;
+        }
         self.current
+    }
+
+    #[cfg(not(wasm_browser))]
+    fn path_allowed(&self, path: &transports::FourTuple) -> bool {
+        self.ip_policy
+            .is_none_or(|policy| policy.read().is_ok_and(|p| p.allows_path(path)))
     }
 
     /// Iterator over candidate paths.
@@ -1446,7 +1527,7 @@ impl<'a> PathSelectionContext<'a> {
     /// The same address may appear more than once when it is a path on multiple
     /// connections to the remote.  Selectors that care should aggregate as appropriate.
     pub fn paths(&self) -> Box<dyn Iterator<Item = PathSelectionData<'a>> + '_> {
-        match &self.source {
+        let paths: Box<dyn Iterator<Item = PathSelectionData<'a>> + '_> = match &self.source {
             PathsSource::Live(connections) => Box::new(
                 connections
                     .values()
@@ -1459,7 +1540,11 @@ impl<'a> PathSelectionContext<'a> {
             ),
             #[cfg(test)]
             PathsSource::Test(paths) => Box::new(paths.iter().cloned()),
-        }
+        };
+        #[cfg(not(wasm_browser))]
+        return Box::new(paths.filter(|p| self.path_allowed(p.network_path())));
+        #[cfg(wasm_browser)]
+        paths
     }
 }
 

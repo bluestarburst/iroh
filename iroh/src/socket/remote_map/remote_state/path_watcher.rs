@@ -220,6 +220,21 @@ impl PathStateSender {
         }
     }
 
+    #[cfg(not(wasm_browser))]
+    pub(super) fn clear_selected(&self) {
+        let changed = self
+            .shared
+            .state
+            .lock()
+            .expect("poisoned")
+            .selected
+            .take()
+            .is_some();
+        if changed {
+            self.shared.notify.notify_waiters();
+        }
+    }
+
     /// Updates the selected transmission path.
     pub(super) fn record_selected(&self, network_path: &transports::FourTuple) {
         let remote_addr: TransportAddr = network_path.remote().into();

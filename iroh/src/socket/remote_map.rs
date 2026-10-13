@@ -195,9 +195,19 @@ struct Tasks {
     poll_cleanup_waker: Option<Waker>,
     /// The path selector used by all [`RemoteStateActor`]s spawned by this map.
     path_selector: Arc<dyn PathSelector>,
+    #[cfg(not(wasm_browser))]
+    ip_policy: crate::ip_transport_policy::IpTransportPolicy,
     custom_transport_path_liveness: Option<super::CustomTransportPathLiveness>,
     /// The tracing span for this endpoint, to be used as parent span for `RemoteStateActor` tasks.
     span: Span,
+}
+
+/// Eligibility and selection inputs for the existing path owner.
+#[derive(Debug)]
+pub(super) struct PathOptions {
+    pub(super) selector: Arc<dyn PathSelector>,
+    #[cfg(not(wasm_browser))]
+    pub(super) ip_policy: crate::ip_transport_policy::IpTransportPolicy,
 }
 
 impl RemoteMap {
@@ -207,7 +217,7 @@ impl RemoteMap {
         local_direct_addrs: n0_watcher::Direct<BTreeSet<DirectAddr>>,
         address_lookup: address_lookup::AddressLookupServices,
         shutdown_token: CancellationToken,
-        path_selector: Arc<dyn PathSelector>,
+        path_options: PathOptions,
         custom_transport_path_liveness: Option<super::CustomTransportPathLiveness>,
         span: Span,
     ) -> Self {
@@ -221,7 +231,9 @@ impl RemoteMap {
                 shutdown_token,
                 tasks: Default::default(),
                 poll_cleanup_waker: None,
-                path_selector,
+                path_selector: path_options.selector,
+                #[cfg(not(wasm_browser))]
+                ip_policy: path_options.ip_policy,
                 custom_transport_path_liveness,
                 span,
             },
@@ -298,6 +310,18 @@ impl RemoteMap {
             // We don't have to be careful about guards - only one thread is modifying this hashmap at a time.
             self.senders.insert(remote_id, sender);
             false
+        }
+    }
+
+    #[cfg(not(wasm_browser))]
+    pub(super) async fn on_ip_policy_change(&mut self) {
+        let senders = {
+            let read = self.senders.read_only();
+            let guard = read.guard();
+            read.values(&guard).cloned().collect::<Vec<_>>()
+        };
+        for sender in senders {
+            let _ = sender.send(RemoteStateMessage::IpPolicyChanged).await;
         }
     }
 
@@ -389,6 +413,8 @@ impl Tasks {
             self.metrics.clone(),
             self.address_lookup.clone(),
             self.path_selector.clone(),
+            #[cfg(not(wasm_browser))]
+            self.ip_policy.clone(),
             self.custom_transport_path_liveness,
         )
         .start(
@@ -455,7 +481,11 @@ mod tests {
             local_direct_addrs,
             address_lookup::AddressLookupServices::default(),
             shutdown_token.clone(),
-            Arc::new(BiasedRttPathSelector::default()),
+            super::PathOptions {
+                selector: Arc::new(BiasedRttPathSelector::default()),
+                #[cfg(not(wasm_browser))]
+                ip_policy: Default::default(),
+            },
             None,
             Span::none(),
         );

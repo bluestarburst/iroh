@@ -140,6 +140,8 @@ pub struct Builder {
     /// Default address filter applied to all address lookup services added via
     /// [`Builder::address_lookup`].
     addr_filter: Option<AddrFilter>,
+    #[cfg(not(wasm_browser))]
+    excluded_ip_networks: Vec<ipnet::IpNet>,
     proxy_url: Option<Url>,
     ca_tls_config: Option<CaTlsConfig>,
     #[cfg(not(wasm_browser))]
@@ -211,6 +213,8 @@ impl Builder {
             address_lookup: Default::default(),
             address_lookup_user_data: Default::default(),
             addr_filter: None,
+            #[cfg(not(wasm_browser))]
+            excluded_ip_networks: Vec::new(),
             proxy_url: None,
             ca_tls_config: None,
             #[cfg(not(wasm_browser))]
@@ -286,6 +290,8 @@ impl Builder {
 
         let sock_opts = socket::Options {
             transports: self.transports,
+            #[cfg(not(wasm_browser))]
+            excluded_ip_networks: self.excluded_ip_networks,
             secret_key,
             address_lookup_user_data: self.address_lookup_user_data,
             proxy_url: self.proxy_url,
@@ -647,6 +653,17 @@ impl Builder {
     /// [`AddressLookupServices`]: crate::address_lookup::AddressLookupServices
     pub fn addr_filter(mut self, filter: AddrFilter) -> Self {
         self.addr_filter = Some(filter);
+        self
+    }
+
+    /// Excludes native IP networks from direct address discovery, QNT and UDP I/O.
+    ///
+    /// Unlike [`Self::addr_filter`], this also prevents explicit or in-band IP
+    /// candidates from sending through an overlay network. Relay/custom transports
+    /// are unchanged. Empty exclusions preserve default native IP behavior.
+    #[cfg(not(wasm_browser))]
+    pub fn excluded_ip_networks(mut self, networks: Vec<ipnet::IpNet>) -> Self {
+        self.excluded_ip_networks = networks;
         self
     }
 
@@ -1730,6 +1747,27 @@ impl Endpoint {
             return;
         }
         self.inner.network_change().await;
+    }
+
+    /// Replaces native IP exclusions on this existing endpoint.
+    ///
+    /// The update fences final UDP sends immediately and prunes the shared local
+    /// candidate set before returning. Existing network-change machinery refreshes
+    /// discovery and QNT; this adds no endpoint, admission or retry owner. Callers
+    /// installing an overlay must apply exclusions before creating its routes,
+    /// and retain them until the owned routes have been removed.
+    #[cfg(not(wasm_browser))]
+    pub async fn set_excluded_ip_networks(
+        &self,
+        networks: Vec<ipnet::IpNet>,
+    ) -> std::io::Result<()> {
+        if self.is_closed() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "endpoint is closed",
+            ));
+        }
+        self.inner.set_excluded_ip_networks(networks).await
     }
 
     // # Methods to update internal state.

@@ -267,6 +267,8 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![cfg_attr(iroh_docsrs, feature(doc_cfg))]
 
+#[cfg(not(wasm_browser))]
+mod ip_transport_policy;
 mod socket;
 pub mod tls;
 

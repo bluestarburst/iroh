@@ -1650,3 +1650,234 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(all(test, not(wasm_browser), with_crypto_provider))]
+mod ip_exclusion_tests {
+    use super::Connection;
+    use crate::{Endpoint, endpoint::presets};
+    use std::time::Duration;
+    const TEST_ALPN: &[u8] = b"ip-policy-qualification";
+    #[cfg(not(wasm_browser))]
+    #[tokio::test]
+    async fn ip_exclusions_cover_live_qnt_updates_without_replacing_the_peer() {
+        let builder = || {
+            Endpoint::builder(presets::Minimal)
+                .clear_ip_transports()
+                .bind_addr("127.0.0.1:0")
+                .unwrap()
+                .bind_addr("[::1]:0")
+                .unwrap()
+                .alpns(vec![TEST_ALPN.to_vec()])
+        };
+        let left = builder().bind().await.unwrap();
+        let right = builder()
+            .excluded_ip_networks(vec!["127.0.0.0/8".parse().unwrap()])
+            .bind()
+            .await
+            .unwrap();
+        let (left_conn, right_conn) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(left.connect(right.addr(), TEST_ALPN), async {
+                right.accept().await.unwrap().await
+            })
+        })
+        .await
+        .unwrap();
+        let left_conn = left_conn.unwrap();
+        let right_conn = right_conn.unwrap();
+        let stable = left_conn.stable_id();
+        async fn candidates(conn: &Connection, ipv4_expected: bool) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let ips = conn.inner.get_remote_nat_traversal_addresses().unwrap();
+                    if !ips.is_empty()
+                        && ips.iter().any(|a| a.ip().to_canonical().is_ipv4()) == ipv4_expected
+                    {
+                        assert!(
+                            ips.iter().any(|a| a.ip().to_canonical().is_ipv6()),
+                            "allowed IPv6 must remain advertised"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("current QNT candidate set must converge");
+        }
+        candidates(&left_conn, false).await;
+        assert!(
+            right
+                .addr()
+                .ip_addrs()
+                .all(|a| a.ip().to_canonical().is_ipv6())
+        );
+        right.set_excluded_ip_networks(Vec::new()).await.unwrap();
+        candidates(&left_conn, true).await;
+        right
+            .set_excluded_ip_networks(vec!["127.0.0.0/8".parse().unwrap()])
+            .await
+            .unwrap();
+        candidates(&left_conn, false).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut send, _) = left_conn.open_bi().await.unwrap();
+            send.write_all(b"still-live").await.unwrap();
+            let (_, mut recv) = right_conn.accept_bi().await.unwrap();
+            let mut bytes = [0; 10];
+            recv.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"still-live");
+        })
+        .await
+        .expect("an allowed physical route must preserve the original peer");
+        assert_eq!(left_conn.stable_id(), stable);
+        assert!(left_conn.close_reason().is_none());
+        left.close().await;
+        right.close().await;
+    }
+
+    #[cfg(feature = "unstable-custom-transports")]
+    #[tokio::test]
+    async fn ip_exclusions_retire_a_selected_ip_path_without_closing_the_peer() {
+        use crate::{
+            EndpointAddr, TransportAddr,
+            socket::{
+                biased_rtt_path_selector::{BiasedRttPathSelector, TransportBias},
+                transports::AddrKind,
+            },
+        };
+        use std::sync::Arc;
+        let builder = || {
+            Endpoint::builder(presets::Minimal)
+                .clear_ip_transports()
+                .bind_addr("127.0.0.1:0")
+                .unwrap()
+                .bind_addr("[::1]:0")
+                .unwrap()
+                .alpns(vec![TEST_ALPN.to_vec()])
+                .path_selector(Arc::new(BiasedRttPathSelector::default().with_bias(
+                    AddrKind::IpV4,
+                    TransportBias::primary().with_rtt_advantage(Duration::from_secs(1)),
+                )))
+        };
+        let left = builder().bind().await.unwrap();
+        let right = builder().bind().await.unwrap();
+        let first = *right.addr().ip_addrs().find(|ip| ip.is_ipv4()).unwrap();
+        let (left_conn, right_conn) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                left.connect(EndpointAddr::new(right.id()).with_ip_addr(first), TEST_ALPN),
+                async { right.accept().await.unwrap().await }
+            )
+        })
+        .await
+        .unwrap();
+        let left_conn = left_conn.unwrap();
+        let right_conn = right_conn.unwrap();
+        let stable = left_conn.stable_id();
+        async fn selected(conn: &Connection, ipv4: bool) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if conn.paths().iter().any(|path| path.is_selected() && matches!(path.remote_addr(), TransportAddr::Ip(ip) if ip.ip().to_canonical().is_ipv4() == ipv4)) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("the actual selected path must converge to the permitted family");
+        }
+        selected(&left_conn, true).await;
+        eprintln!("PASS: selected IPv4 precondition before policy withdrawal");
+        // The peer must have advertised a real IPv6 backup before withdrawal;
+        // policy cannot manufacture addresses for an otherwise unreachable peer.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if left_conn
+                    .inner
+                    .get_remote_nat_traversal_addresses()
+                    .unwrap()
+                    .iter()
+                    .any(|ip| ip.is_ipv6())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the independent peer must advertise an allowed backup");
+        left.set_excluded_ip_networks(vec!["127.0.0.0/8".parse().unwrap()])
+            .await
+            .unwrap();
+        selected(&left_conn, false).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut send, _) = left_conn.open_bi().await.unwrap();
+            send.write_all(b"permitted-path").await.unwrap();
+            let (_, mut recv) = right_conn.accept_bi().await.unwrap();
+            let mut bytes = [0; 14];
+            recv.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"permitted-path");
+        })
+        .await
+        .expect("route-local policy update must preserve encrypted peer I/O");
+        assert_eq!(left_conn.stable_id(), stable);
+        assert!(left_conn.close_reason().is_none());
+        left.close().await;
+        right.close().await;
+    }
+
+    #[tokio::test]
+    async fn ip_exclusions_drop_inbound_udp_before_quic_datagram_delivery() {
+        let builder = || {
+            Endpoint::builder(presets::Minimal)
+                .clear_ip_transports()
+                .bind_addr("127.0.0.1:0")
+                .unwrap()
+                .alpns(vec![TEST_ALPN.to_vec()])
+        };
+        let left = builder().bind().await.unwrap();
+        let right = builder().bind().await.unwrap();
+        let (a, b) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(left.connect(right.addr(), TEST_ALPN), async {
+                right.accept().await.unwrap().await
+            })
+        })
+        .await
+        .unwrap();
+        let a = a.unwrap();
+        let b = b.unwrap();
+        a.send_datagram(bytes::Bytes::from_static(b"before"))
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), b.read_datagram())
+                .await
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            b"before"
+        );
+        right
+            .set_excluded_ip_networks(vec!["127.0.0.0/8".parse().unwrap()])
+            .await
+            .unwrap();
+        // This sender remains unrestricted; the receiver must reject its valid
+        // authenticated QUIC packet at native ingress, even without a reply.
+        a.send_datagram(bytes::Bytes::from_static(b"blocked"))
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), b.read_datagram())
+                .await
+                .is_err(),
+            "excluded ingress reached the already authenticated QUIC datagram queue"
+        );
+        right.set_excluded_ip_networks(Vec::new()).await.unwrap();
+        a.send_datagram(bytes::Bytes::from_static(b"after"))
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), b.read_datagram())
+                .await
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            b"after"
+        );
+        left.close().await;
+        right.close().await;
+    }
+}

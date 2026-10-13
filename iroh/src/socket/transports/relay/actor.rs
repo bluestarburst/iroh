@@ -1552,6 +1552,8 @@ mod tests {
     async fn close_all_active_relays_survives_a_cancelled_task() {
         let (relay_datagram_recv_queue, _recv_rx) = mpsc::channel(1);
         let config = Config {
+            #[cfg(not(wasm_browser))]
+            relay_transport_policy: Default::default(),
             my_relay: Default::default(),
             secret_key: SecretKey::from_bytes(&[0u8; 32]),
             dns_resolver: DnsResolver::new(),
@@ -1970,6 +1972,8 @@ mod tests {
                     .client_config(default_provider())
                     .expect("infallible"),
                 auth_token: None,
+                #[cfg(not(wasm_browser))]
+                transport_policy: Default::default(),
             },
             stop_token: CancellationToken::new(),
             metrics: Default::default(),
