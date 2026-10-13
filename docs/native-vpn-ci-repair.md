@@ -60,3 +60,24 @@ upstream runner/services; this change does not provision those services or
 count a queued external-service lane as passed. Public GitHub standard runner
 labels and ARM64 Mac availability were checked against:
 https://docs.github.com/en/actions/reference/runners/github-hosted-runners.
+
+
+## First hosted compilation diagnostics
+
+Run 38441005348 assigns real GitHub-hosted Linux, ARM Mac and Windows runners.
+Compilation then fails under warnings-denied HTTP/1-only builds because the
+upstream Hyper timer argument is unused without HTTP/2. Its argument is renamed
+`_timer` and still forwarded unchanged when HTTP/2 is enabled; both source
+mirrors match. Patchbay fixtures now use pinned 0.7's actual Moderate/Strict NAT
+variants and wifi()/mobile_3g()/mobile_4g() functions. CI compiler diagnostics
+and the installed pinned crate confirm those API names. Android setup requests
+platform-tools explicitly, because its pinned action defaults to the removed
+`tools` package. Formatting, YAML parsing and diff checks pass; remote rebuilt
+checks remain pending.
+
+The semver gate also exposes the known non-transitive root patch limitation:
+its generated standalone consumer cannot resolve Reqwest's unpublished
+native-socket-initializer feature. That gate remains failed, not waived. A
+complete independently resolvable dependency graph is still required before
+publication. This is a release blocker rather than a reason to claim a source
+workspace is a standalone published library.

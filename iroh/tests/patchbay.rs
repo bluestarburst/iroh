@@ -252,13 +252,17 @@ async fn link_outage_recovery_server() -> Result {
 /// returns.
 async fn run_direct_relay_direct_repromotion(replug_side: Side) -> Result {
     let (lab, relay_map, _relay_guard, guard) = lab_with_relay(testdir!()).await?;
-    let nat_easy = lab.add_router("nat_easy").nat(Nat::Home).build().await?;
-    let nat_hard = lab
-        .add_router("nat_hard")
-        .nat(Nat::Corporate)
+    let nat_easy = lab
+        .add_router("nat_easy")
+        .nat(Nat::Moderate)
         .build()
         .await?;
-    let nat_peer = lab.add_router("nat_peer").nat(Nat::Home).build().await?;
+    let nat_hard = lab.add_router("nat_hard").nat(Nat::Strict).build().await?;
+    let nat_peer = lab
+        .add_router("nat_peer")
+        .nat(Nat::Moderate)
+        .build()
+        .await?;
     let replug = lab
         .add_device("replug")
         .uplink(nat_easy.id())
