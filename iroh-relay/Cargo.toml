@@ -184,6 +184,9 @@ rustdoc-args = ["--cfg", "iroh_docsrs"]
 
 [package.metadata.cargo_check_external_types]
 allowed_external_types = [
+    # HTTP factory bridge shared by endpoint-owned report/discovery clients.
+    "reqwest::ClientBuilder",
+    "reqwest::async_impl::client::ClientBuilder",
     # workspace crates
     "iroh_base::*",
     "iroh_dns::*",

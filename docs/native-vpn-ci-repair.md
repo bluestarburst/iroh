@@ -105,3 +105,13 @@ and docs passed. Crypto-free, public-type, Android IPv6 and standalone semver
 failures remain distinguished. The HTTP socket fixture passes its two real
 request/refusal cases after the Hyper argument fix. DNS and standalone graph
 qualification remain open; VPN activation remains disabled.
+
+
+The latest external-type audit accepts the intended IpNet/Netwatch constructor
+inputs and reports only the HTTP factory bridge's Reqwest ClientBuilder.
+That exact builder type and its canonical path are now explicitly reviewed in
+the relay package metadata. The existing configure_http_client method is used
+by endpoint-owned report and PKARR factories; it passes constructor input into
+the original client, without owning DNS, retries or peer lifecycle. The gate
+continues checking other external types. Standalone dependency-resolution
+qualification still fails independently and remains a publication blocker.
