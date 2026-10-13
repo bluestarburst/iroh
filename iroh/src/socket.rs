@@ -1773,6 +1773,16 @@ impl Actor {
             self.re_stun(UpdateReason::LinkChangeMinor);
         }
 
+        // Native interface facts are already current here. Refresh the shared
+        // publication/QNT source immediately instead of retaining removed local
+        // addresses until an asynchronous STUN/relay report changes. The report
+        // owner still refreshes external mappings through its existing path.
+        #[cfg(not(wasm_browser))]
+        {
+            let (report, _) = self.sock.net_report.get();
+            self.update_direct_addresses(report.as_ref());
+        }
+
         if self.has_usable_network() {
             // This is considered a usable network change, propagate it to the QUIC stack
             // right away.

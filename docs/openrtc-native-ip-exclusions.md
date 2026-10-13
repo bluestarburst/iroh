@@ -76,5 +76,51 @@ the socket actor makes that fixture fail at its intended assertion, `online
 connect blocked behind hanging lookup`; the negative control was restored.
 No assertion, production deadline, recovery timer or test was removed.
 
-No SDK artifact, registry publication, real TUN, relay/custom exclusion,
-independent-device or shipping VPN result is claimed by these local checks.
+No SDK artifact, registry publication, relay/custom exclusion, independent-device
+or shipping VPN result is claimed by the preceding loopback checks.
+
+
+## Real Linux TUN qualification
+
+Two explicit Linux privileged-fixture cases now run through Proxy's existing
+root helper and typed unprivileged `HelperClient`, inside a disposable,
+network-disabled namespace. The ordinary library suite ignores these two
+operator-only cases; the `linux-underlay.mjs` gate invokes both unconditionally
+and fails on missing execution, timeout, wrong payload or incomplete cleanup.
+No shipping flag, test-only production API or replacement OS adapter is added.
+
+The native carrier case routes a pre-existing sender's small UDP packet through
+a real helper-owned TUN and observes its exact bytes/source/destination. Applying
+the pool exclusion stops the next payload; clearing restores capture through
+that same sender. Observation starts after `poll_send` completes. Removing the
+final UDP guard makes the denied payload appear in the actual TUN and fails the
+independent receiver assertion; the source was restored afterward. This is raw
+native UDP mechanism proof, not an admitted application packet/session claim.
+
+The candidate case establishes an encrypted Iroh peer before TUN creation.
+Both peers exclude the virtual pool, while an unrestricted control endpoint
+provides the positive address-collection control. The fixture creates the TUN
+and adds a new allowed address to its separate dummy underlay interface. That
+new allowed address must reach publication and current in-band QNT, while the
+TUN address must reach only the unrestricted control. After verified TUN/route
+removal, the allowed alias is removed and must retire from QNT. Encrypted stream
+bytes and the original connection stable ID survive all phases; exclusions are
+cleared only after owned route/interface teardown is verified.
+
+This case failed twice on the pre-fix owner with both published and QNT addresses
+stale after actual kernel removal. With an empty relay map, repeated minor
+changes can set the same `(None, LinkChangeMinor)` network-report value and
+produce no watched report update. The socket actor now refreshes the shared local
+candidate source immediately from current interface facts during its existing
+network-change transition. The report still owns external mapping refresh;
+there is no additional timer, peer close, reconnect loop or registry. The
+unchanged five-second removal gate passes after that owning repair.
+
+Final validation: Mac SDK-shaped library suite 126 passed/1 existing ignored;
+Linux suite 126 passed/3 ignored, with the two new privileged cases separately
+executed and passing. Native warnings-denied library Clippy, WASM compilation
+(one existing relay warning), and Proxy's Linux helper-example warnings-denied
+Clippy pass. The complete gate verifies preservation of its foreign underlay
+interface/default route and restoration of the original namespace inventory.
+These tests do not establish independent-device, relay/custom socket, OS service
+installation or complete shipping VPN support.

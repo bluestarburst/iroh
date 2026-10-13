@@ -1734,6 +1734,156 @@ mod ip_exclusion_tests {
         right.close().await;
     }
 
+    /// Real interface changes must reach both publication and live in-band QNT.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires the explicit isolated Linux underlay helper gate"]
+    async fn ip_exclusions_cover_real_tun_address_refresh_and_removal() {
+        use std::{io::Write, net::IpAddr, path::PathBuf};
+        let fixture = PathBuf::from(
+            std::env::var("PROXY_VPN_UNDERLAY_GATE_DIR")
+                .expect("run through the isolated Linux underlay gate"),
+        );
+        let overlay: ipnet::IpNet = "10.203.94.0/24".parse().unwrap();
+        let allowed: IpAddr = "10.207.40.1".parse().unwrap();
+        let added: IpAddr = "10.207.40.2".parse().unwrap();
+        let builder = || {
+            Endpoint::builder(presets::Minimal)
+                .clear_ip_transports()
+                .bind_addr("0.0.0.0:0")
+                .unwrap()
+                .alpns(vec![TEST_ALPN.to_vec()])
+        };
+        let left = builder()
+            .excluded_ip_networks(vec![overlay])
+            .bind()
+            .await
+            .unwrap();
+        let right = builder()
+            .excluded_ip_networks(vec![overlay])
+            .bind()
+            .await
+            .unwrap();
+        let control = builder().bind().await.unwrap();
+        assert!(
+            right.addr().ip_addrs().any(|addr| addr.ip() == allowed),
+            "fixture must expose a real allowed native interface before TUN creation"
+        );
+        let (left_conn, right_conn) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(left.connect(right.addr(), TEST_ALPN), async {
+                right.accept().await.unwrap().await
+            })
+        })
+        .await
+        .unwrap();
+        let left_conn = left_conn.unwrap();
+        let right_conn = right_conn.unwrap();
+        let stable = left_conn.stable_id();
+        async fn signal(fixture: &std::path::Path, phase: &str) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !fixture.join(phase).exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("real interface fixture phase did not arrive");
+        }
+        async fn payload(left: &Connection, right: &Connection) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (mut send, _) = left.open_bi().await.unwrap();
+                send.write_all(b"live-underlay").await.unwrap();
+                let (_, mut recv) = right.accept_bi().await.unwrap();
+                let mut bytes = [0; 13];
+                recv.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(&bytes, b"live-underlay");
+            })
+            .await
+            .expect("existing encrypted peer must remain usable through interface changes");
+        }
+        payload(&left_conn, &right_conn).await;
+        println!("UNDERLAY: endpoint-ready");
+        std::io::stdout().flush().unwrap();
+        signal(&fixture, "tun-created").await;
+        for ep in [&left, &right, &control] {
+            ep.network_change().await;
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let positive = control
+                    .addr()
+                    .ip_addrs()
+                    .any(|addr| overlay.contains(&addr.ip()));
+                let ips = left_conn
+                    .inner
+                    .get_remote_nat_traversal_addresses()
+                    .unwrap();
+                if positive
+                    && right.addr().ip_addrs().any(|addr| addr.ip() == added)
+                    && ips.iter().any(|addr| addr.ip() == added)
+                {
+                    assert!(
+                        ips.iter().all(|addr| !overlay.contains(&addr.ip())),
+                        "real TUN address leaked into current in-band QNT"
+                    );
+                    for ep in [&left, &right] {
+                        assert!(
+                            ep.addr()
+                                .ip_addrs()
+                                .all(|addr| !overlay.contains(&addr.ip())),
+                            "real TUN address leaked into publication candidates"
+                        );
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("new allowed interface address and unfiltered TUN positive control must converge");
+        payload(&left_conn, &right_conn).await;
+        println!("UNDERLAY: candidates-refreshed");
+        std::io::stdout().flush().unwrap();
+        signal(&fixture, "tun-removed").await;
+        for ep in [&left, &right, &control] {
+            ep.network_change().await;
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ips = left_conn
+                    .inner
+                    .get_remote_nat_traversal_addresses()
+                    .unwrap();
+                if control
+                    .addr()
+                    .ip_addrs()
+                    .all(|addr| !overlay.contains(&addr.ip()))
+                    && ips.iter().any(|addr| addr.ip() == allowed)
+                    && ips.iter().all(|addr| addr.ip() != added)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| panic!(
+            "removed real interface addresses must retire from current QNT: {error:?}; control={:?}; right={:?}; qnt={:?}; close={:?}",
+            control.addr(), right.addr(), left_conn.inner.get_remote_nat_traversal_addresses(), left_conn.close_reason()
+        ));
+        // The fixture verifies owned route/interface removal before this clear.
+        left.set_excluded_ip_networks(Vec::new()).await.unwrap();
+        right.set_excluded_ip_networks(Vec::new()).await.unwrap();
+        payload(&left_conn, &right_conn).await;
+        assert_eq!(left_conn.stable_id(), stable);
+        assert!(left_conn.close_reason().is_none());
+        left.close().await;
+        right.close().await;
+        control.close().await;
+        println!(
+            "PASS: real TUN create/refresh/remove preserved filtered publication/QNT and encrypted peer identity"
+        );
+    }
+
     #[cfg(feature = "unstable-custom-transports")]
     #[tokio::test]
     async fn ip_exclusions_retire_a_selected_ip_path_without_closing_the_peer() {

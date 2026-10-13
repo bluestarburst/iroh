@@ -1588,4 +1588,66 @@ mod tests {
             "clearing the exclusion must restore this same sender"
         );
     }
+
+    /// Real TUN route proof, orchestrated with Proxy's existing root helper.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires the explicit isolated Linux underlay helper gate"]
+    async fn ip_exclusions_fence_real_tun_capture() {
+        use crate::ip_transport_policy::IpTransportPolicy;
+        use std::{io::Write, path::PathBuf};
+        use tokio::time::{Duration, timeout};
+        let fixture = PathBuf::from(
+            std::env::var("PROXY_VPN_UNDERLAY_GATE_DIR")
+                .expect("run through the isolated Linux underlay gate"),
+        );
+        let metrics = EndpointMetrics::default();
+        let TransportConfig::Ip { config, .. } = TransportConfig::default_ipv4() else {
+            unreachable!()
+        };
+        let mut transports = custom_only_transports(Vec::new());
+        transports.ip = IpTransports::bind([config].into_iter(), &metrics).unwrap();
+        let policy = IpTransportPolicy::default();
+        transports.set_ip_policy(policy.clone());
+        let mut retained = transports.create_sender().clone();
+        let destination = FourTuple::Ip {
+            remote: "10.203.94.2:33444".parse().unwrap(),
+            local: None,
+        };
+        for (phase, payload, networks) in [
+            ("udp-positive", "underlay-positive", Vec::new()),
+            (
+                "udp-denied",
+                "underlay-denied",
+                vec!["10.203.94.0/24".parse().unwrap()],
+            ),
+            ("udp-restored", "underlay-restored", Vec::new()),
+        ] {
+            policy.replace(networks).unwrap();
+            println!("UNDERLAY: {phase}");
+            std::io::stdout().flush().unwrap();
+            let transmit = Transmit {
+                contents: payload.as_bytes(),
+                ecn: None,
+                segment_size: None,
+            };
+            std::future::poll_fn(|cx| {
+                Pin::new(&mut retained).poll_send(cx, &destination, &transmit)
+            })
+            .await
+            .unwrap();
+            println!("UNDERLAY: {phase}-sent");
+            std::io::stdout().flush().unwrap();
+            // The external fixture acknowledges only an independently observed
+            // TUN payload, or an observed quiet interval for the denied payload.
+            timeout(Duration::from_secs(5), async {
+                while !fixture.join(phase).exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("physical TUN observation did not acknowledge this phase");
+        }
+        println!("PASS: real TUN captured permitted UDP and rejected retained-sender excluded UDP");
+    }
 }
