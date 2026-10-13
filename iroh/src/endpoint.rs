@@ -1606,6 +1606,13 @@ impl Endpoint {
         Ok(self.inner.dns_resolver())
     }
 
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub(crate) fn native_tcp_socket_initializer(
+        &self,
+    ) -> Option<iroh_relay::client::NativeTcpSocketInitializer> {
+        self.inner.native_tcp_socket_initializer()
+    }
+
     /// Returns the [`rustls::ClientConfig`] used by the endpoint for connecting to external services.
     ///
     /// This might be useful for address lookup services or other functions

@@ -387,6 +387,8 @@ pub(crate) struct Socket {
     /// The DNS resolver to be used in this socket.
     #[cfg(not(wasm_browser))]
     dns_resolver: DnsResolver,
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_relay_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
     relay_map: RelayMap,
 
     /// Optional Address Lookup
@@ -557,6 +559,14 @@ impl Socket {
     #[cfg(not(wasm_browser))]
     pub(crate) fn dns_resolver(&self) -> &DnsResolver {
         &self.dns_resolver
+    }
+
+    // Shared constructor input for endpoint-owned HTTP discovery factories.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub(crate) fn native_tcp_socket_initializer(
+        &self,
+    ) -> Option<iroh_relay::client::NativeTcpSocketInitializer> {
+        self.native_relay_tcp_socket_initializer.clone()
     }
 
     /// Translates a possible IP-mapped [`SocketAddr`] into a [`transports::Addr`].
@@ -1062,6 +1072,8 @@ impl EndpointInner {
             net_report: Watchable::new((None, UpdateReason::None)),
             #[cfg(not(wasm_browser))]
             dns_resolver: dns_resolver.clone(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: native_relay_tcp_socket_initializer.clone(),
             metrics: metrics.clone(),
             local_addrs_watch: transports.local_addrs_watch(),
             home_relay_watch,

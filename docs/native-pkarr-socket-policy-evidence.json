@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-13",
+  "scope": "Iroh source PKARR HTTP factory; no Linux helper composition or SDK adoption",
+  "baseIrohRevision": "2faf262608172f0f3dec6419194eb12de3dfdb3c",
+  "sourceSha256": {
+    "iroh/src/address_lookup/pkarr.rs": "5330e6c91d3dfd472236509490fc01a0bb8c4e61afe43e60de5444f8fd633f30",
+    "iroh/src/endpoint.rs": "835f90fd12a795d59094e43d190667f6fbc1b852d248843bd1214190a6a18a04",
+    "iroh/src/socket.rs": "1b2bc5c3961d3d87fae8255c7420c171178e558bdcc82a1dfcd243e34bf856cd"
+  },
+  "logSha256": {
+    "/tmp/proxy-vpn-pkarr-policy-check-v1.log": "ceda6f6c5466ae3d9a74a3551545f5f59643641de0e2a7012cadb7275b3a75dd",
+    "/tmp/proxy-vpn-pkarr-policy-clippy-v1.log": "f894fb06c4775ae20d0526ea230b650f06da2e92dbc6c712eeb229cf14f9df5a",
+    "/tmp/proxy-vpn-pkarr-policy-clippy-v2.log": "e28684fd822ca2894798a8218cb1d6aaa63f759ce335bcd40151190bb868776e",
+    "/tmp/proxy-vpn-pkarr-policy-default-check-v1.log": "d63df4f87d337fc2b30d5c0286b77bddafa3219576ef99559165593b3b80c2e9",
+    "/tmp/proxy-vpn-pkarr-policy-default-check-v2.log": "235600476219bf4ecc837b90c217bdf4ac476843291a4768670fe4bc34c66559",
+    "/tmp/proxy-vpn-pkarr-policy-omit-endpoint-input.log": "e7f172d73e63e8279198c32ea63f8c619bb1ee69e52626b85bcad67b1349e9e5",
+    "/tmp/proxy-vpn-pkarr-policy-restored-suite.log": "00c4b83aca931c57454ee8d4db99a873945f1e9312b2dba3fc819145b6378742",
+    "/tmp/proxy-vpn-pkarr-policy-tests-v1.log": "7bcb81ff0183a3eac1ba3fca2ca94a068697b59741bea0033dbb1f412b46f7ae",
+    "/tmp/proxy-vpn-pkarr-policy-tests-v2.log": "786faa82421ea0fe6442aa696cf622641e3cf2acedb6e8ee1117076df75f8bd6",
+    "/tmp/proxy-vpn-pkarr-policy-wasm-check-v1.log": "e36709678e65a27608b10f322467a9615fb5bc5d8580fa7da578b2cfa898484d",
+    "/tmp/proxy-vpn-pkarr-policy-wasm-check-v2.log": "080bfec14661ae14cc0c689973b9ab5f09fb0a5deeb1ad7dc284bf7f8d8c5774"
+  },
+  "commands": {
+    "focused": "cargo test -p iroh --lib --features native-tcp-socket-initializer,native-udp-socket-initializer --locked --offline native_socket_policy_tests -- --test-threads=1",
+    "fullBeforePrivateConstructorRefactor": "cargo test -p iroh --lib --features native-tcp-socket-initializer,native-udp-socket-initializer --locked --offline -- --test-threads=2",
+    "clippy": "cargo clippy -p iroh --lib --features native-tcp-socket-initializer,native-udp-socket-initializer --locked --offline -- -D warnings",
+    "default": "cargo check -p iroh --lib --locked --offline",
+    "wasm": "cargo check -p iroh --lib --target wasm32-unknown-unknown --no-default-features --features tls-ring,native-tcp-socket-initializer --locked --offline"
+  },
+  "results": {
+    "signedPublishResolve": "passed through actual local TCP listener; actual unused descriptors observed before connect",
+    "refusal": "resolution error, one callback and no server connection",
+    "omittedEndpointForwarding": "signed exchange passes then expected descriptor count fails: zero versus two; restored source passes",
+    "fullSuiteBeforePrivateConstructorRefactor": {
+      "passed": 123,
+      "ignored": 1
+    },
+    "focusedAfterRefactor": {
+      "passed": 2
+    },
+    "defaultCompileAfterRefactor": "passed",
+    "wasmAfterRefactor": "passed with existing relay import warning",
+    "warningsDeniedClippyAfterRefactor": "passed"
+  },
+  "initialLintFailure": "private publisher constructor grew to eight arguments; replaced argument bundle with already-prepared HTTP client instead of suppressing lint",
+  "sdkStillPins": "2faf262608172f0f3dec6419194eb12de3dfdb3c",
+  "remaining": [
+    "Linux helper PKARR composition",
+    "SDK adoption",
+    "DNS",
+    "gateway HTTP/WebSocket",
+    "QUIC relay/portmapper/custom sockets",
+    "published graph/artifacts/runtime matrix",
+    "independent devices and OS installation"
+  ],
+  "vpnEnabled": false
+}
