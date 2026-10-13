@@ -971,7 +971,7 @@ impl EndpointInner {
             #[cfg(not(wasm_browser))]
             relay_transport_policy,
             #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
-            native_relay_tcp_socket_initializer,
+            native_relay_tcp_socket_initializer: native_relay_tcp_socket_initializer.clone(),
             proxy_url: proxy_url.clone(),
             ipv6_reported: ipv6_reported.clone(),
             tls_config: tls_config.clone(),
@@ -1112,10 +1112,13 @@ impl EndpointInner {
                 ipv4: true,
                 ipv6: has_ipv6_transport,
             });
-            net_report::Options::new(tls_config.clone())
+            let config = net_report::Options::new(tls_config.clone())
                 .quic_config(qad_config)
                 .proxy_url(proxy_url.clone())
-                .net_report_config(net_report_config)
+                .net_report_config(net_report_config);
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            let config = config.native_tcp_socket_initializer(native_relay_tcp_socket_initializer);
+            config
         };
 
         #[cfg(wasm_browser)]

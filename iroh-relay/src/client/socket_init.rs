@@ -4,18 +4,31 @@ use std::{fmt, io, sync::Arc};
 /// Borrowed unused TCP socket. Configure it synchronously before connect;
 /// never retain a descriptor or create another sender/lifecycle owner.
 #[derive(Clone, Copy, Debug)]
-pub struct NativeTcpSocketRef<'a>(pub(super) &'a tokio::net::TcpSocket);
+pub struct NativeTcpSocketRef<'a>(NativeTcpSocketKind<'a>);
+#[derive(Clone, Copy, Debug)]
+enum NativeTcpSocketKind<'a> {
+    Relay(&'a tokio::net::TcpSocket),
+    Http(reqwest::NativeTcpSocketRef<'a>),
+}
 
 #[cfg(unix)]
 impl std::os::fd::AsFd for NativeTcpSocketRef<'_> {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        std::os::fd::AsFd::as_fd(self.0)
+        match &self.0 {
+            NativeTcpSocketKind::Relay(socket) => std::os::fd::AsFd::as_fd(*socket),
+            NativeTcpSocketKind::Http(socket) => std::os::fd::AsFd::as_fd(socket),
+        }
     }
 }
 #[cfg(windows)]
 impl std::os::windows::io::AsSocket for NativeTcpSocketRef<'_> {
     fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
-        std::os::windows::io::AsSocket::as_socket(self.0)
+        match &self.0 {
+            NativeTcpSocketKind::Relay(socket) => {
+                std::os::windows::io::AsSocket::as_socket(*socket)
+            }
+            NativeTcpSocketKind::Http(socket) => std::os::windows::io::AsSocket::as_socket(socket),
+        }
     }
 }
 
@@ -38,8 +51,18 @@ impl NativeTcpSocketInitializer {
     ) -> Self {
         Self(Arc::new(initialize))
     }
+    /// Apply this same trusted policy to the existing HTTP client factory.
+    /// Covers its native TCP descriptors, including explicit HTTP proxies.
+    /// Requires the source-qualified Reqwest/Hyper socket-input patches.
+    pub fn configure_http_client(&self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+        let initialize = self.clone();
+        builder.native_tcp_socket_initializer(move |socket| {
+            (initialize.0)(NativeTcpSocketRef(NativeTcpSocketKind::Http(socket)))
+        })
+    }
+
     pub(super) fn initialize(&self, socket: &tokio::net::TcpSocket) -> io::Result<()> {
-        (self.0)(NativeTcpSocketRef(socket))
+        (self.0)(NativeTcpSocketRef(NativeTcpSocketKind::Relay(socket)))
     }
 }
 

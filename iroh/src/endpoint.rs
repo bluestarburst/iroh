@@ -710,7 +710,7 @@ impl Builder {
         self
     }
 
-    /// Configure native WebSocket relay/proxy TCP sockets before connect.
+    /// Configure native relay/proxy and network-report HTTP TCP sockets before connect.
     /// The existing relay actor retains this constructor input across dials.
     /// DNS, QUIC relay, gateway and custom carriers are outside this partial input.
     #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]

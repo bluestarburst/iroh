@@ -75,3 +75,36 @@ installed for this qualification.
 See `native-relay-tcp-socket-initializer-evidence.json` for source and log hashes.
 Windows runtime, physical independent devices and full SDK socket-factory
 coverage remain unverified.
+
+
+## Network-report HTTP source follow-up
+
+The constructor input now also reaches the existing Reqwest clients used for
+relay HTTPS latency and captive-portal probes. Reqwest forwards a default-off
+socket input to Hyper's existing TCP factory before bind/connect. Its TLS,
+proxy, request, response body, pooling and cancellation code stays in the
+upstream libraries. The same borrowed descriptor callback handles both Tokio
+relay sockets and Hyper HTTP sockets. A typed refusal terminates Happy Eyeballs
+instead of accepting another IP/family. No probe or peer retry owner is added.
+
+The source root and SDK audit mirror contain the pinned HTTP library patches,
+with upstream licenses and original package provenance. These root patches are
+not inherited by a published dependency. A complete published composition and
+source-current SDK adoption remain necessary. The default-off source extension
+is not a new shipping VPN capability.
+
+The real network reporter case accepts a configured probe and records relay
+latency; refusal yields no successful latency. Public HTTP client tests exercise
+fresh connections after clone, pre-bind/pre-connect kernel options, and refusal
+for direct/proxy requests across same/mixed IP families. Omitting forwarding,
+terminal-refusal handling or report-owner input fails the corresponding intended
+assertion, then restored source passes.
+
+Mac Iroh feature suite: 129 passed/one existing ignored. HTTP-feature-off suite:
+128 passed/one existing ignored. Linux: 130 passed/three existing ignored, plus
+the two existing relay initializer cases. Warnings-denied Iroh/relay Clippy passes
+on Mac/Linux. Browser checking passes with the existing relay import warning.
+The standalone public-HTTP fixture has its own existing Hyper timer warning.
+SDK adoption/helper composition for these new probe sockets, DNS, PKARR/gateway
+HTTP, QUIC relay, portmapper, custom carriers, Windows runtime and independent
+physical devices remain open. See native-http-probe-socket-policy-evidence.json.

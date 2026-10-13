@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["vendor/hyper-util", "vendor/reqwest013"]
 members = [
   "iroh-base",
   "iroh-dns",
@@ -60,5 +61,8 @@ type_marked_deprecated = { required-update = "minor" }
 type_method_marked_deprecated = { required-update = "minor" }
 
 [patch.crates-io]
+# Source-qualified HTTP socket input; not inherited by published dependencies.
+hyper-util = { path = "vendor/hyper-util" }
+reqwest013 = { package = "reqwest", path = "vendor/reqwest013" }
 # Upstream pre-bind configurator retained across UDP rebinds; unreleased API.
 netwatch = { git = "https://github.com/n0-computer/net-tools.git", rev = "87ad510e0749a5c21ce736478d1369449200da44" }

@@ -17,6 +17,9 @@ mod imp {
     /// Use [`Options::quic_config`] to enable  QUIC address discovery.
     #[derive(Debug, Clone)]
     pub(crate) struct Options {
+        #[cfg(feature = "native-tcp-socket-initializer")]
+        pub(crate) native_tcp_socket_initializer:
+            Option<iroh_relay::client::NativeTcpSocketInitializer>,
         /// The configuration needed to launch QUIC address discovery probes.
         ///
         /// If not provided, will not run QUIC address discovery.
@@ -34,12 +37,23 @@ mod imp {
     impl Options {
         pub(crate) fn new(tls_config: rustls::ClientConfig) -> Self {
             Self {
+                #[cfg(feature = "native-tcp-socket-initializer")]
+                native_tcp_socket_initializer: None,
                 quic_config: None,
                 tls_config,
                 proxy_url: None,
                 user_config: NetReportConfig::default(),
             }
         }
+        #[cfg(feature = "native-tcp-socket-initializer")]
+        pub(crate) fn native_tcp_socket_initializer(
+            mut self,
+            initialize: Option<iroh_relay::client::NativeTcpSocketInitializer>,
+        ) -> Self {
+            self.native_tcp_socket_initializer = initialize;
+            self
+        }
+
         /// Enable quic probes
         pub(crate) fn quic_config(mut self, quic_config: Option<QuicConfig>) -> Self {
             self.quic_config = quic_config;

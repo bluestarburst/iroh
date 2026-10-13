@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-13",
+  "scope": "partial network-report HTTPS/captive-portal TCP constructor policy; no SDK adoption, helper/probe composition, VPN activation or publication",
+  "sourceSha256": {
+    "Cargo.toml": "9e0edad15070fd83de407b23ba4224f1a4ee2e6d1a26c64cf236fa572a772b39",
+    "Cargo.lock": "c3a3b7474eeafc43eb4bbc4b3ccf94e5d416a02b6abd826b6ae085701c7ca4f6",
+    "iroh-relay/Cargo.toml": "ed4ef6835d06316608ab4539e2755d0bd431b2f22f31afde3d7a4a1db5efac9c",
+    "iroh-relay/src/client/socket_init.rs": "57bd9e948397eaa6a4876988fe9c45e7e6dd3341213a5c2157429a454201d8fa",
+    "iroh/src/net_report.rs": "42cf4503a7c58c72eefa70cb397924d2220b1ceaf60537f25fa4e5b36bb939b7",
+    "iroh/src/net_report/options.rs": "d04efc1c75d34b20adb7eff02af58c74bf7d2e40ec75c0a663cbd80c85430d85",
+    "iroh/src/net_report/reportgen.rs": "872d59802741df80709c1089bc8c86df165657b35a44b885b76ea1d7bd5d5b25",
+    "iroh/src/socket.rs": "2888b7e678b660383cd0593a4dc9d784a0b5db6b51484f0db07ba9b7fcde3afe",
+    "iroh/src/endpoint.rs": "ab08a4b694c1bfdd13c057552187de3831af5bc0421737cac3ccf7864a1eddec",
+    "vendor/hyper-util/src/client/legacy/connect/http.rs": "ce72cda5b8cf8706d7a7c0f28239d72d246366502281a07226941b0031d58bcb",
+    "vendor/hyper-util/src/client/legacy/connect/socket_init.rs": "74269450756b40d408d895216ae1beb5714857341ba654700d755dba9ebbcc3a",
+    "vendor/reqwest013/src/async_impl/client.rs": "9d323f43d971c242f97f73bcc6bc28a166e53b4d199f34a894f5a9846a72f936"
+  },
+  "logsSha256": {
+    "/tmp/proxy-vpn-http-policy-canonical-tests.log": "687e038cacbfa7efb8a702c81232015073669668ec7b8c2b5e137bac72ec1478",
+    "/tmp/proxy-vpn-http-policy-forwarding-mutant.log": "d08d0bfc7024c7038237663a932d6d59647d8d879d29c73473f9b2820a6c012f",
+    "/tmp/proxy-vpn-http-policy-fallback-mutant.log": "57b372233f04c266a9a7078c24b63cc1276c38c1146a268a6585ae6f0e8b401d",
+    "/tmp/proxy-vpn-http-report-input-mutant.log": "23752e327ab011c106045855ab7e284b0cb99bc59215bda507b043c3e2ec7a3b",
+    "/tmp/proxy-vpn-http-probe-native-suite.log": "8dacaeaf000749363d0d0a79bb0107fe28d913f23555ec6af9804aa461381fd2",
+    "/tmp/proxy-vpn-http-probe-mac-default.log": "a9eed8d73c1619e9fb7ea9775a7ee0579a3d38566d91de77b7e664b1b271bf78",
+    "/tmp/proxy-vpn-http-probe-mac-clippy.log": "e4094fb80ca6fe1353ef66ec840c8ae04a705279343aecb478120b69c3dd12c4",
+    "/tmp/proxy-vpn-http-probe-mac-wasm-v2.log": "c9a4365b3f4863fbcad0317d0453f0755d9e5b894f8d5994effab0145c42f6c5",
+    "/tmp/proxy-vpn-http-probe-linux-suite-v1.log": "efcd75794a0bdad20f2ff362127c1c20c157be95d2a7314b2a536bc2fa89484c"
+  },
+  "results": {
+    "macFeature": {
+      "passed": 129,
+      "ignored": 1
+    },
+    "macHttpFeatureOff": {
+      "passed": 128,
+      "ignored": 1
+    },
+    "linuxFeature": {
+      "passed": 130,
+      "ignored": 3
+    },
+    "publicHttpFixturePassed": 2,
+    "negativeControls": [
+      "Reqwest to Hyper forwarding omitted",
+      "Hyper terminal family-refusal guard omitted",
+      "network-report constructor input omitted"
+    ],
+    "clippy": "Mac/Linux Iroh+relay warnings denied passed",
+    "wasm": "passed with existing relay warning"
+  },
+  "upstreamMirrors": {
+    "hyper-util": "0.1.20 b23a13e2b7ee73e15ba008cd9b19dcd2d3861957 MIT",
+    "reqwest": "0.13.4 11489b34eda6d32b15ad4033e62beba2ee401350 MIT OR Apache-2.0"
+  },
+  "remaining": [
+    "source-current SDK and actual helper/probe composition",
+    "DNS",
+    "PKARR/gateway HTTP",
+    "QUIC relay/portmapper/custom sockets",
+    "published dependency graph/artifacts/runtime matrix",
+    "physical devices and OS installation"
+  ]
+}
