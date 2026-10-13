@@ -81,3 +81,27 @@ native-socket-initializer feature. That gate remains failed, not waived. A
 complete independently resolvable dependency graph is still required before
 publication. This is a release blocker rather than a reason to claim a source
 workspace is a standalone published library.
+
+
+## Crypto-free and emulator loopback follow-up
+
+The crypto-free relay build called Noq's provider-gated client constructor.
+It now returns the existing MissingCryptoProvider error for QUIC carriage when
+no provider feature is compiled. The matching private QUIC framing module and
+imports are compiled with the provider feature; the provider-enabled path is
+unchanged. Warnings-denied Clippy passes for both crypto-free and native TCP
+provider-enabled relay builds. The public type audit explicitly names the
+canonical IpNet and Netwatch borrowed-socket/family types already used by the
+constructor API; it does not blanket-approve the dependency.
+
+Android runtime's live QNT check failed because CI explicitly disabled ::1.
+The disposable emulator setup now enables IPv6 on loopback and asserts ::1/128
+exists, while keeping unavailable global IPv6 disabled. The test remains a
+hard-fail real payload/QNT check. Remote rerun is still required.
+
+At preceding head 478b933, default native suites passed on Linux, ARM Mac and
+Windows; Mac all-features, WASM, Android ARM cross-builds, native MSRV, Clippy
+and docs passed. Crypto-free, public-type, Android IPv6 and standalone semver
+failures remain distinguished. The HTTP socket fixture passes its two real
+request/refusal cases after the Hyper argument fix. DNS and standalone graph
+qualification remain open; VPN activation remains disabled.

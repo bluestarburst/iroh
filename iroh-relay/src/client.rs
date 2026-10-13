@@ -21,7 +21,9 @@ use n0_future::{
     split::{SplitSink, SplitStream, split},
     time,
 };
-use tracing::{Level, debug, event, trace};
+#[cfg(all(not(wasm_browser), with_crypto_provider))]
+use tracing::{Level, event};
+use tracing::{debug, trace};
 use url::Url;
 
 pub use self::conn::{RecvError, SendError};
@@ -35,7 +37,7 @@ use crate::{
 };
 
 pub(crate) mod conn;
-#[cfg(not(wasm_browser))]
+#[cfg(all(not(wasm_browser), with_crypto_provider))]
 pub(crate) mod quic_stream;
 #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
 mod socket_init;
@@ -453,7 +455,7 @@ impl ClientBuilder {
     }
 
     /// Establishes a new QUIC stream connection to the relay server.
-    #[cfg(not(wasm_browser))]
+    #[cfg(all(not(wasm_browser), with_crypto_provider))]
     fn quic_dial_error(reason: impl Into<String>) -> ConnectError {
         e!(
             ConnectError::Dial,
@@ -464,7 +466,12 @@ impl ClientBuilder {
     }
 
     /// Establishes a new QUIC stream connection to the relay server.
-    #[cfg(not(wasm_browser))]
+    #[cfg(all(not(wasm_browser), not(with_crypto_provider)))]
+    fn connect_quic(&self) -> std::future::Ready<Result<Client, ConnectError>> {
+        std::future::ready(Err(e!(ConnectError::MissingCryptoProvider)))
+    }
+
+    #[cfg(all(not(wasm_browser), with_crypto_provider))]
     async fn connect_quic(&self) -> Result<Client, ConnectError> {
         use noq::crypto::rustls::QuicClientConfig;
 

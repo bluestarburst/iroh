@@ -196,6 +196,10 @@ allowed_external_types = [
     "rustls::*",
     "netwatch::SocketRef",
     "netwatch::IpFamily",
+    "netwatch::ip_family::IpFamily",
+    "netwatch::udp::SocketRef",
+    "ipnet::IpNet",
+    "ipnet::ipnet::IpNet",
     "futures_core::stream::Stream",
     # only type alias
     "futures_lite::stream::Boxed",
