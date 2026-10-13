@@ -909,6 +909,10 @@ pub enum BindError {
         #[error(from)]
         source: tls::TlsConfigError,
     },
+    /// Native DNS policy cannot be installed into an opaque custom resolver.
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    #[error("Native DNS initializer requires the endpoint-owned default resolver")]
+    NativeDnsResolverConflict,
 }
 
 impl EndpointInner {

@@ -43,3 +43,14 @@ Current-source remote DNS/semver results, SDK/helper adoption, independent
 devices and native installations remain pending. Normal Proxy VPN is disabled.
 Crates.io publication still needs a distributable modified HTTP/DNS cohort.
 See native-dns-source-provenance.json for original sources and result hashes.
+
+The endpoint builder now also accepts native_dns_socket_initializer(...). It
+installs the policy while constructing the existing default resolver with
+that endpoint's exact TLS configuration. Supplying an opaque custom resolver
+alongside this policy fails before bind; the endpoint cannot claim to configure
+an unknown resolver. Two native constructor tests pass for forwarding/refusal
+and custom-resolver conflict. This constructor is the SDK adoption boundary.
+
+Main CI at d4bf806 passed the canonical semver comparison, superseding the prior
+Client Sync/DialError failure. The new endpoint constructor needs its own fresh
+source CI. No later source is treated as covered by that earlier result.

@@ -148,6 +148,8 @@ pub struct Builder {
     native_udp_bind_options: Option<netwatch::BindOptions>,
     #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
     native_relay_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    native_dns_socket_initializer: Option<crate::dns::NativeSocketInitializer>,
     proxy_url: Option<Url>,
     ca_tls_config: Option<CaTlsConfig>,
     #[cfg(not(wasm_browser))]
@@ -225,6 +227,8 @@ impl Builder {
             native_udp_bind_options: None,
             #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
             native_relay_tcp_socket_initializer: None,
+            #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+            native_dns_socket_initializer: None,
             proxy_url: None,
             ca_tls_config: None,
             #[cfg(not(wasm_browser))]
@@ -291,12 +295,24 @@ impl Builder {
             .map_err(|err| e!(BindError::InvalidCaRootConfig, err))?;
 
         #[cfg(not(wasm_browser))]
-        let dns_resolver = self.dns_resolver.unwrap_or_else(|| {
-            DnsResolver::builder()
-                .with_system_defaults()
-                .tls_client_config(tls_config.clone())
-                .build()
-        });
+        let dns_resolver = {
+            #[cfg(feature = "native-dns-socket-initializer")]
+            if self.native_dns_socket_initializer.is_some() && self.dns_resolver.is_some() {
+                return Err(e!(BindError::NativeDnsResolverConflict));
+            }
+            self.dns_resolver.unwrap_or_else(|| {
+                let builder = DnsResolver::builder()
+                    .with_system_defaults()
+                    .tls_client_config(tls_config.clone());
+                #[cfg(feature = "native-dns-socket-initializer")]
+                let builder = if let Some(initializer) = self.native_dns_socket_initializer {
+                    builder.native_socket_initializer(initializer)
+                } else {
+                    builder
+                };
+                builder.build()
+            })
+        };
 
         let sock_opts = socket::Options {
             transports: self.transports,
@@ -706,6 +722,26 @@ impl Builder {
                 })
             },
         ));
+        self
+    }
+
+    /// Configure the default native DNS resolver before any socket is created.
+    /// Retains this endpoint's TLS trust, system configuration, fallback and
+    /// reset behavior. A separately supplied custom resolver is refused because
+    /// the endpoint cannot install this policy into an opaque resolver.
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    pub fn native_dns_socket_initializer(
+        mut self,
+        initialize: impl for<'a> Fn(
+            crate::dns::NativeSocketRef<'a>,
+            crate::dns::NativeSocketProtocol,
+        ) -> std::io::Result<()>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.native_dns_socket_initializer =
+            Some(crate::dns::NativeSocketInitializer::new(initialize));
         self
     }
 
@@ -2284,6 +2320,50 @@ mod tests {
             QlogFileGroup, run_relay_server, run_relay_server_with, run_relay_server_with_access,
         },
     };
+
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    #[tokio::test]
+    async fn native_dns_constructor_reaches_default_resolver() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .native_dns_socket_initializer(move |_, _| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "endpoint DNS policy",
+                ))
+            })
+            .bind()
+            .await
+            .unwrap();
+        let result = endpoint
+            .dns_resolver()
+            .unwrap()
+            .lookup_ipv4("refused.invalid.", std::time::Duration::from_secs(1))
+            .await;
+        endpoint.close().await;
+        assert!(matches!(
+            result,
+            Err(crate::dns::DnsError::SocketPolicy { .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    #[tokio::test]
+    async fn native_dns_policy_cannot_be_claimed_for_a_custom_resolver() {
+        let result = Endpoint::builder(presets::Minimal)
+            .dns_resolver(crate::dns::DnsResolver::new())
+            .native_dns_socket_initializer(|_, _| panic!("custom resolver policy must not run"))
+            .bind()
+            .await;
+        assert!(matches!(
+            result,
+            Err(BindError::NativeDnsResolverConflict { .. })
+        ));
+    }
 
     const TEST_ALPN: &[u8] = b"n0/iroh/test";
 

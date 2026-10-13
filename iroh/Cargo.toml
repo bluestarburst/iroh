@@ -195,6 +195,8 @@ allowed_external_types = [
     "url::*",
     # non-1.0 crates that we decided to accept in the public API
     "rustls::*",
+    "n0_dns_resolver::socket_init::NativeSocketRef",
+    "n0_dns_resolver::builder::DnsProtocol",
     "netwatch::SocketRef",
     "netwatch::IpFamily",
     "netwatch::ip_family::IpFamily",
