@@ -183,6 +183,11 @@ pub enum DnsError {
     // discriminants.
     #[error("Domain name does not exist (NXDOMAIN)")]
     NxDomain {},
+    /// Trusted native socket protection was refused. This is terminal, not a
+    /// network failure eligible for another family or staggered attempt.
+    #[cfg(all(not(wasm_browser), feature = "native-socket-initializer"))]
+    #[error("Native DNS socket initialization refused")]
+    SocketPolicy { source: std::io::Error },
 }
 
 /// Potential errors related to DNS endpoint address lookups.
@@ -210,9 +215,17 @@ impl<E: StackError + 'static> StaggeredError<E> {
     }
 }
 
+/// Trusted descriptor policy for all native DNS transports.
+#[cfg(all(not(wasm_browser), feature = "native-socket-initializer"))]
+pub use n0_dns_resolver::{
+    DnsProtocol as NativeSocketProtocol, NativeSocketInitializer, NativeSocketRef,
+};
+
 /// Builder for [`DnsResolver`].
 #[derive(Debug, Clone, Default)]
 pub struct Builder {
+    #[cfg(all(not(wasm_browser), feature = "native-socket-initializer"))]
+    native_socket_initializer: Option<NativeSocketInitializer>,
     use_system_defaults: bool,
     nameservers: Vec<NameserverConfig>,
     fallback_mode: FallbackMode,
@@ -400,6 +413,14 @@ impl DnsProtocol {
 }
 
 impl Builder {
+    /// Configure every fresh native DNS socket before bind/connect. Reset
+    /// retains this policy; refusal stops nameserver and transport fallback.
+    #[cfg(all(not(wasm_browser), feature = "native-socket-initializer"))]
+    pub fn native_socket_initializer(mut self, initializer: NativeSocketInitializer) -> Self {
+        self.native_socket_initializer = Some(initializer);
+        self
+    }
+
     /// Makes the builder respect the host system's DNS configuration.
     ///
     /// The configuration is read in a platform-specific way. If that fails, or
@@ -528,6 +549,10 @@ impl Builder {
                 .into_iter()
                 .map(NameserverConfig::into_resolver_nameserver),
         );
+        #[cfg(all(not(wasm_browser), feature = "native-socket-initializer"))]
+        if let Some(initializer) = self.native_socket_initializer {
+            builder = builder.native_socket_initializer(initializer);
+        }
         if self.use_system_defaults {
             builder = builder.use_system_config();
         }
@@ -607,6 +632,8 @@ impl Resolver for DefaultResolver {
 fn map_resolve_error(err: n0_dns_resolver::Error) -> DnsError {
     use n0_dns_resolver::Error as E;
     match err {
+        #[cfg(feature = "native-socket-initializer")]
+        E::SocketPolicy { source, .. } => e!(DnsError::SocketPolicy { source }),
         E::Timeout { .. } => e!(DnsError::Timeout),
         E::NoResponse { .. } => e!(DnsError::NoResponse),
         E::NxDomain { .. } => e!(DnsError::NxDomain),
@@ -847,6 +874,7 @@ impl DnsResolver {
         );
 
         match res {
+            (Err(err), _) | (_, Err(err)) if err.terminal_dns_failure() => Err(err),
             (Ok(ipv4), Ok(ipv6)) => Ok(LookupIter::Both(ipv4.chain(ipv6))),
             (Ok(ipv4), Err(_)) => Ok(LookupIter::Ipv4(ipv4)),
             (Err(_), Ok(ipv6)) => Ok(LookupIter::Ipv6(ipv6)),
@@ -873,6 +901,7 @@ impl DnsResolver {
                     self.lookup_ipv6(domain, timeout)
                 );
                 let (v4, v6) = match lookup {
+                    (Err(err), _) | (_, Err(err)) if err.terminal_dns_failure() => return Err(err),
                     (Err(ipv4_err), Err(ipv6_err)) => {
                         return Err(e!(DnsError::ResolveBoth {
                             ipv4: Box::new(ipv4_err),
@@ -984,12 +1013,20 @@ impl DnsResolver {
                     res = &mut state.v4_fut => {
                         match res {
                             Ok(items) => state.queue.extend(items.map(IpAddr::V4)),
+                            Err(err) if err.terminal_dns_failure() => {
+                                state.closed = true;
+                                return Some((Err(err), state));
+                            }
                             Err(err) => state.v4_err = Some(err),
                         }
                     }
                     res = &mut state.v6_fut => {
                         match res {
                             Ok(items) => state.queue.extend(items.map(IpAddr::V6)),
+                            Err(err) if err.terminal_dns_failure() => {
+                                state.closed = true;
+                                return Some((Err(err), state));
+                            }
                             Err(err) => state.v6_err = Some(err),
                         }
                     }
@@ -1190,13 +1227,41 @@ impl<A: Iterator<Item = IpAddr>, B: Iterator<Item = IpAddr>> Iterator for Lookup
     }
 }
 
+// Only the resolver's typed host refusal changes retry eligibility. Ordinary
+// DNS failures retain the existing staggered/family fallback behavior.
+trait TerminalDnsFailure {
+    fn terminal_dns_failure(&self) -> bool;
+}
+
+impl TerminalDnsFailure for DnsError {
+    fn terminal_dns_failure(&self) -> bool {
+        match self {
+            #[cfg(all(not(wasm_browser), feature = "native-socket-initializer"))]
+            Self::SocketPolicy { .. } => true,
+            Self::ResolveBoth { ipv4, ipv6, .. } => {
+                ipv4.terminal_dns_failure() || ipv6.terminal_dns_failure()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl TerminalDnsFailure for LookupError {
+    fn terminal_dns_failure(&self) -> bool {
+        match self {
+            Self::LookupFailed { source, .. } => source.terminal_dns_failure(),
+            _ => false,
+        }
+    }
+}
+
 /// Staggers calls to the future F with the given delays.
 ///
 /// The first call is performed immediately. The first call to succeed generates an Ok result
 /// ignoring any previous error. If all calls fail, an error summarizing all errors is returned.
 async fn stagger_call<
     T,
-    E: StackError + 'static,
+    E: StackError + TerminalDnsFailure + 'static,
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, E>>,
 >(
@@ -1220,6 +1285,9 @@ async fn stagger_call<
     while let Some(call_result) = calls.next().await {
         match call_result {
             Ok(t) => return Ok(t),
+            Err(err) if err.terminal_dns_failure() => {
+                return Err(e!(StaggeredError { errors: vec![err] }));
+            }
             Err(e) => errors.push(e),
         }
     }
@@ -1247,6 +1315,41 @@ pub(crate) mod tests {
     use n0_tracing_test::traced_test;
 
     use super::*;
+
+    #[cfg(feature = "native-socket-initializer")]
+    #[tokio::test]
+    async fn native_policy_refusal_stops_public_staggered_lookup() {
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let resolver = DnsResolver::builder()
+            .add_nameserver_config(NameserverConfig::udp(addr.ip()).with_port(addr.port()))
+            .disable_fallback()
+            .native_socket_initializer(NativeSocketInitializer::new(move |_, _| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "host policy refused",
+                ))
+            }))
+            .build();
+        let error = resolver
+            .lookup_ipv4_staggered("refused.example.", Duration::from_secs(1), &[10, 20])
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(error.iter().count(), 1);
+        assert!(matches!(
+            error.iter().next(),
+            Some(DnsError::SocketPolicy { .. })
+        ));
+        assert_eq!(
+            server.try_recv_from(&mut [0; 512]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 
     #[test]
     fn builder_named_nameservers_carry_server_name() {

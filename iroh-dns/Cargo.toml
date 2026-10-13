@@ -27,13 +27,14 @@ tracing = "0.1"
 url = "2.5.3"
 
 [target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies]
-n0-dns-resolver = { version = "0.1", default-features = false, features = ["transport-tls", "transport-https"] }
+n0-dns-resolver = { path = "../vendor/n0-dns-resolver", version = "0.1", default-features = false, features = ["transport-tls", "transport-https"] }
 rustls = { version = "0.23.45", default-features = false }
 
 [build-dependencies]
 cfg_aliases = "0.2.2"
 
 [features]
+native-socket-initializer = ["n0-dns-resolver/native-socket-initializer"]
 default = []
 tls-ring = ["rustls/ring", "n0-dns-resolver/tls-ring"]
 tls-aws-lc-rs = ["rustls/aws-lc-rs", "n0-dns-resolver/tls-aws-lc-rs"]
@@ -46,6 +47,9 @@ webpki-roots = "1.0.7"
 
 [package.metadata.cargo_check_external_types]
 allowed_external_types = [
+    "n0_dns_resolver::socket_init::NativeSocketInitializer",
+    "n0_dns_resolver::socket_init::NativeSocketRef",
+    "n0_dns_resolver::builder::DnsProtocol",
     "iroh_base::*",
     "n0_error::*",
     "rustls::*",

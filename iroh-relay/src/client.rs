@@ -127,12 +127,6 @@ pub enum ConnectError {
 #[allow(missing_docs)]
 #[non_exhaustive]
 pub enum DialError {
-    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
-    #[error(transparent)]
-    SocketInitialization {
-        #[error(std_err)]
-        source: SocketInitializationError,
-    },
     #[error("Invalid target port")]
     InvalidTargetPort {},
     #[error(transparent)]
@@ -166,6 +160,12 @@ pub enum DialError {
     #[cfg(not(wasm_browser))]
     #[error("QUIC relay failed: {reason}")]
     Quic { reason: String },
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    #[error(transparent)]
+    SocketInitialization {
+        #[error(std_err)]
+        source: SocketInitializationError,
+    },
 }
 
 /// Build a Client.

@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["vendor/hyper-util", "vendor/reqwest013", "vendor/hyper-rustls", "vendor/hyper-tls"]
+exclude = ["vendor/hyper-util", "vendor/reqwest013", "vendor/hyper-rustls", "vendor/hyper-tls", "vendor/n0-dns-resolver"]
 members = [
   "iroh-base",
   "iroh-dns",

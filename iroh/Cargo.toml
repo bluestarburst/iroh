@@ -148,6 +148,7 @@ testdir = "0.10"
 cfg_aliases = { version = "0.2.2" }
 
 [features]
+native-dns-socket-initializer = ["iroh-dns/native-socket-initializer"]
 native-tcp-socket-initializer = ["iroh-relay/native-tcp-socket-initializer"]
 # Native IP UDP bind/rebind initializer; does not cover relay/DNS/custom sockets.
 native-udp-socket-initializer = []

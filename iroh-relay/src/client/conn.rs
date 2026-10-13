@@ -69,7 +69,7 @@ pub enum RecvError {
 pub(crate) struct Conn {
     #[debug("relay byte stream")]
     #[cfg(not(wasm_browser))]
-    pub(crate) conn: Pin<Box<dyn BytesStreamSink + Send>>,
+    pub(crate) conn: Pin<Box<dyn BytesStreamSink + Send + Sync>>,
     #[debug("relay byte stream")]
     #[cfg(wasm_browser)]
     pub(crate) conn: Pin<Box<dyn BytesStreamSink>>,
@@ -86,7 +86,7 @@ impl Conn {
         protocol_version: ProtocolVersion,
     ) -> Result<Self, handshake::Error>
     where
-        IO: BytesStreamSink + ExportKeyingMaterial + Send + 'static,
+        IO: BytesStreamSink + ExportKeyingMaterial + Send + Sync + 'static,
     {
         // exchange information with the server
         let mut conn = io;
