@@ -9,12 +9,13 @@ CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 # is generated. Only the `check-external-types` task uses this.
 CARGO_MAKE_WORKSPACE_SKIP_MEMBERS = ["iroh/bench"]
 
+# The virtual workspace root covers every owned member. Avoid --all: it also
+# rewrites direct vendored path dependencies, which retain upstream formatting.
 [tasks.format]
 workspace = false
 command = "cargo"
 args = [
      "fmt",
-     "--all",
      "--",
      "--config",
      "unstable_features=true",
@@ -27,7 +28,6 @@ workspace = false
 command = "cargo"
 args = [
      "fmt",
-     "--all",
      "--check",
      "--",
      "--config",
