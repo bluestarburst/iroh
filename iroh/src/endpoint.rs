@@ -123,6 +123,9 @@ use crate::socket::transports::IpConfig;
 use crate::socket::transports::TransportConfig;
 pub use crate::{net_report::NetReportConfig, portmapper::PortmapperConfig};
 
+#[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+pub use netwatch::{IpFamily as NativeUdpIpFamily, SocketRef as NativeUdpSocketRef};
+
 /// Builder for [`Endpoint`].
 ///
 /// By default the endpoint will generate a new random [`SecretKey`], which will result in a
@@ -142,6 +145,8 @@ pub struct Builder {
     addr_filter: Option<AddrFilter>,
     #[cfg(not(wasm_browser))]
     excluded_ip_networks: Vec<ipnet::IpNet>,
+    #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+    native_udp_bind_options: Option<netwatch::BindOptions>,
     proxy_url: Option<Url>,
     ca_tls_config: Option<CaTlsConfig>,
     #[cfg(not(wasm_browser))]
@@ -215,6 +220,8 @@ impl Builder {
             addr_filter: None,
             #[cfg(not(wasm_browser))]
             excluded_ip_networks: Vec::new(),
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options: None,
             proxy_url: None,
             ca_tls_config: None,
             #[cfg(not(wasm_browser))]
@@ -292,6 +299,8 @@ impl Builder {
             transports: self.transports,
             #[cfg(not(wasm_browser))]
             excluded_ip_networks: self.excluded_ip_networks,
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options: self.native_udp_bind_options,
             secret_key,
             address_lookup_user_data: self.address_lookup_user_data,
             proxy_url: self.proxy_url,
@@ -664,6 +673,34 @@ impl Builder {
     #[cfg(not(wasm_browser))]
     pub fn excluded_ip_networks(mut self, networks: Vec<ipnet::IpNet>) -> Self {
         self.excluded_ip_networks = networks;
+        self
+    }
+
+    /// Configure each native IP transport UDP socket before bind, including replacements
+    /// allocated by Netwatch during rebind. An initializer error fails endpoint
+    /// bind even for an optional IP family; a failed rebind remains closed.
+    ///
+    /// This does not protect DNS, relay TCP/QUIC or custom carrier sockets and
+    /// is not a complete VPN underlay capability. The callback must be bounded
+    /// and must not create a second peer lifecycle or recovery owner.
+    #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+    pub fn native_udp_socket_initializer(
+        mut self,
+        initialize: impl Fn(NativeUdpSocketRef<'_>, NativeUdpIpFamily) -> std::io::Result<()>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.native_udp_bind_options = Some(netwatch::BindOptions::new().configure_socket(
+            move |socket, family| {
+                initialize(socket, family).map_err(|error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        crate::socket::transports::SocketInitializerFailure(error),
+                    )
+                })
+            },
+        ));
         self
     }
 

@@ -33,6 +33,8 @@ use custom::{CustomEndpoint, CustomSender, CustomTransport};
 
 #[cfg(not(wasm_browser))]
 pub(crate) use self::ip::Config as IpConfig;
+#[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+pub(crate) use self::ip::SocketInitializerFailure;
 #[cfg(not(wasm_browser))]
 use self::ip::{IpNetworkChangeSender, IpTransports, IpTransportsSender};
 pub(crate) use self::relay::{
@@ -192,6 +194,8 @@ impl Transports {
         relay_actor_config: RelayActorConfig,
         metrics: &EndpointMetrics,
         shutdown_token: CancellationToken,
+        #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+        bind_options: Option<&netwatch::BindOptions>,
     ) -> io::Result<Self> {
         #[cfg(not(wasm_browser))]
         let ip_configs = {
@@ -222,7 +226,12 @@ impl Transports {
             ip_configs
         };
         #[cfg(not(wasm_browser))]
-        let ip = IpTransports::bind(ip_configs.into_iter(), metrics)?;
+        let ip = IpTransports::bind(
+            ip_configs.into_iter(),
+            metrics,
+            #[cfg(feature = "native-udp-socket-initializer")]
+            bind_options,
+        )?;
 
         let relay = configs
             .iter()
@@ -1417,7 +1426,13 @@ mod tests {
         let metrics = EndpointMetrics::default();
         Transports {
             #[cfg(not(wasm_browser))]
-            ip: ip::IpTransports::bind(std::iter::empty(), &metrics).unwrap(),
+            ip: ip::IpTransports::bind(
+                std::iter::empty(),
+                &metrics,
+                #[cfg(feature = "native-udp-socket-initializer")]
+                None,
+            )
+            .unwrap(),
             #[cfg(not(wasm_browser))]
             ip_policy: Default::default(),
             relay: Vec::new(),
@@ -1534,7 +1549,13 @@ mod tests {
             unreachable!()
         };
         let mut transports = custom_only_transports(Vec::new());
-        transports.ip = IpTransports::bind([config].into_iter(), &metrics).unwrap();
+        transports.ip = IpTransports::bind(
+            [config].into_iter(),
+            &metrics,
+            #[cfg(feature = "native-udp-socket-initializer")]
+            None,
+        )
+        .unwrap();
         let policy = IpTransportPolicy::default();
         transports.set_ip_policy(policy.clone());
         let mut sender = transports.create_sender();
@@ -1606,7 +1627,13 @@ mod tests {
             unreachable!()
         };
         let mut transports = custom_only_transports(Vec::new());
-        transports.ip = IpTransports::bind([config].into_iter(), &metrics).unwrap();
+        transports.ip = IpTransports::bind(
+            [config].into_iter(),
+            &metrics,
+            #[cfg(feature = "native-udp-socket-initializer")]
+            None,
+        )
+        .unwrap();
         let policy = IpTransportPolicy::default();
         transports.set_ip_policy(policy.clone());
         let mut retained = transports.create_sender().clone();

@@ -172,6 +172,8 @@ pub(crate) struct Options {
     pub(crate) transports: Vec<TransportConfig>,
     #[cfg(not(wasm_browser))]
     pub(crate) excluded_ip_networks: Vec<ipnet::IpNet>,
+    #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+    pub(crate) native_udp_bind_options: Option<netwatch::BindOptions>,
 
     /// Secret key for this endpoint.
     pub(crate) secret_key: SecretKey,
@@ -909,6 +911,8 @@ impl EndpointInner {
             transports: transport_configs,
             #[cfg(not(wasm_browser))]
             excluded_ip_networks,
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options,
             address_lookup_user_data,
             #[cfg(not(wasm_browser))]
             dns_resolver,
@@ -978,6 +982,8 @@ impl EndpointInner {
             relay_actor_config,
             &metrics,
             shutdown_token.child_token(),
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options.as_ref(),
         )
         .map_err(|err| e!(BindError::Sockets, err))?;
         #[cfg(not(wasm_browser))]
@@ -2286,6 +2292,8 @@ mod tests {
         let server_config = static_config.create_server_config(vec![]);
         Options {
             excluded_ip_networks: Vec::new(),
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options: None,
             transports: vec![
                 TransportConfig::default_ipv4(),
                 TransportConfig::default_ipv6(),
@@ -2706,6 +2714,8 @@ mod tests {
         let dns_resolver = DnsResolver::new();
         let opts = Options {
             excluded_ip_networks: Vec::new(),
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options: None,
             transports: vec![
                 TransportConfig::default_ipv4(),
                 TransportConfig::default_ipv6(),
@@ -3000,3 +3010,12 @@ mod tests {
         // But we don't have that much private access to the RemoteMap.  This will do for now.
     }
 }
+
+#[cfg(all(
+    test,
+    with_crypto_provider,
+    not(wasm_browser),
+    feature = "native-udp-socket-initializer"
+))]
+#[path = "socket/native_socket_initializer_tests.rs"]
+mod native_socket_initializer_tests;

@@ -139,6 +139,7 @@ wasm-bindgen-test = "0.3.62"
 
 # patchbay netsim test dependencies (linux only)
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+nix = { version = "=0.31.3", features = ["socket", "uio", "net"] }
 ctor = "1.0"
 patchbay = { version = "0.7", features = ["iroh-metrics"] }
 testdir = "0.10"
@@ -147,6 +148,8 @@ testdir = "0.10"
 cfg_aliases = { version = "0.2.2" }
 
 [features]
+# Native IP UDP bind/rebind initializer; does not cover relay/DNS/custom sockets.
+native-udp-socket-initializer = []
 default = ["metrics", "fast-apple-datapath", "portmapper", "tls-ring"]
 portmapper = ["dep:portmapper"]
 metrics = ["iroh-metrics/metrics", "iroh-relay/metrics"]
@@ -190,6 +193,8 @@ allowed_external_types = [
     "url::*",
     # non-1.0 crates that we decided to accept in the public API
     "rustls::*",
+    "netwatch::SocketRef",
+    "netwatch::IpFamily",
     "futures_core::stream::Stream",
     # only type alias
     "futures_lite::stream::Boxed",
