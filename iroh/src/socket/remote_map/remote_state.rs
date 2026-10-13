@@ -981,16 +981,20 @@ impl State {
         preferred_transport_addr: Option<TransportAddr>,
         tx: oneshot::Sender<Result<(), AddressLookupFailed>>,
     ) {
-        // An explicit EndpointAddr is generation-scoped addressing evidence.
-        // Prefer its relay for the connection-establishment packet when the
-        // caller did not choose another transport explicitly. A durable
-        // EndpointId can survive a process restart while a previously selected
-        // direct path still points at the retired process generation. Sending
-        // the new handshake through the freshly registered relay avoids that
-        // stale-path window; normal path selection and direct migration resume
-        // as soon as the connection is established.
-        let preferred_transport_addr = preferred_transport_addr
-            .or_else(|| addrs.iter().find(|candidate| candidate.is_relay()).cloned());
+        // Fresh explicit addresses can supersede a cached selected path after
+        // a same-identity process restart. Prefer the fresh relay only when the
+        // cached path is absent from that addressing input. Ordinary connection
+        // establishment must retain direct/relay eligibility: an unavailable
+        // relay cannot monopolize Initial traffic while a usable direct path is
+        // known. Explicit caller preferences keep their existing semantics.
+        let cached_path_replaced = self.selected_path.as_ref().is_some_and(|selected| {
+            !addrs.is_empty() && !addrs.contains(&selected.remote().into())
+        });
+        let preferred_transport_addr = preferred_transport_addr.or_else(|| {
+            cached_path_replaced
+                .then(|| addrs.iter().find(|candidate| candidate.is_relay()).cloned())
+                .flatten()
+        });
         let preferred_transport_addr = preferred_transport_addr
             .into_iter()
             .flat_map(|addr| to_transports_addr(self.endpoint_id, [addr]))

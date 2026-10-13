@@ -957,7 +957,10 @@ mod tests {
     /// `RemoteStateActor` reply when handling `ResolveRemote`, so a slow or
     /// hanging lookup would serialise every other `connect()` behind it via the
     /// single socket actor. This tests that we do not serialize here anymore.
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    // This fixture performs real kernel UDP/QUIC I/O. An auto-advancing paused
+    // clock can expire its unchanged one-second deadline before those I/O
+    // readiness events arrive; the hanging resolver itself has no timer.
+    #[tokio::test(flavor = "current_thread")]
     #[traced_test]
     async fn concurrent_connects_not_blocked_by_slow_lookup() -> Result {
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0u64);

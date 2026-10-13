@@ -56,17 +56,25 @@ native relay fixture defaults and removing two identity conversions of
 `std::io::Error` in the fork's existing relay stream adapter. The WASM library
 check passes; one existing relay import warning remains there.
 
-The broader SDK-shaped library suite is not green: candidate 121 passed,
-5 failed, 1 ignored. An isolated archive of the pinned baseline, with only the
-three missing fixture defaults supplied so its tests can compile, reproduces
-exactly the same five failures (117 passed, 5 failed, 1 ignored):
+The final SDK-shaped library suite passes: 126 passed, 0 failed, 1 existing
+ignored test. Its initial five failures were also reproduced in an isolated
+archive of the pinned baseline (117 passed, the same 5 failed, 1 ignored), with
+only the three fixture defaults required to compile the baseline tests.
 
-- `address_lookup::tests::concurrent_connects_not_blocked_by_slow_lookup`
-- `endpoint::connection::tests::test_paths_watcher`
-- `endpoint::tests::endpoint_two_direct_add_relay`
-- `endpoint::tests::endpoint_unreachable_relay_direct_connect_succeeds`
-- `test_utils::test_transport::tests::test_custom_transport_wins_over_relay`
+Four failures came from preferring a relay for every fresh explicit address
+input, even when that relay was unreachable and a usable direct/custom path
+existed. The existing remote actor now gives an implicit fresh relay preference
+only when an already selected cached path is absent from the new explicit
+addresses. Explicit caller preferences retain their meaning. Both unreachable-
+relay/direct cases, custom-over-relay selection, path watching, and the existing
+same-identity restart/new-ALPN regression pass in the full suite.
 
-These failures are not waived or removed. No full-suite, SDK artifact,
-registry publication, real TUN, relay/custom exclusion, independent-device or
-shipping VPN result is claimed by these local loopback checks.
+The lookup concurrency fixture uses real kernel UDP/QUIC with an unchanged
+one-second deadline. Removing its auto-advancing paused test clock resolves a
+false timeout. Reintroducing the historical blocking per-peer lookup wait in
+the socket actor makes that fixture fail at its intended assertion, `online
+connect blocked behind hanging lookup`; the negative control was restored.
+No assertion, production deadline, recovery timer or test was removed.
+
+No SDK artifact, registry publication, real TUN, relay/custom exclusion,
+independent-device or shipping VPN result is claimed by these local checks.
