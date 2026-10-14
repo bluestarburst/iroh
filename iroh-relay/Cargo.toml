@@ -46,8 +46,8 @@ postcard = { version = "1", default-features = false, features = [
     "use-std",
     "experimental-derive",
 ] }
-noq = { version = "1.3.0", default-features = false, features = ["rustls"] }
-noq-proto = { version = "1.3.0", default-features = false }
+noq = { path = "../vendor/noq", version = "1.3.0", default-features = false, features = ["rustls"] }
+noq-proto = { path = "../vendor/noq-proto", version = "1.3.0", default-features = false }
 rand = "0.10"
 reqwest = { path = "../vendor/reqwest013", version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23.45", default-features = false }
@@ -87,7 +87,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 # non-wasm-in-browser dependencies
 [target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies]
 # OpenRTC fork: native QUIC relay carriage needs tokio runtime without the server feature.
-noq = { version = "1.3.0", default-features = false, features = ["runtime-tokio", "rustls"] }
+noq = { path = "../vendor/noq", version = "1.3.0", default-features = false, features = ["runtime-tokio", "rustls"] }
 tokio = { version = "1", features = [
     "io-util",
     "macros",

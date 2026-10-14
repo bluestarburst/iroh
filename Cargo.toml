@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["vendor/hyper-util", "vendor/reqwest013", "vendor/hyper-rustls", "vendor/hyper-tls", "vendor/n0-dns-resolver"]
+exclude = ["vendor/noq", "vendor/noq-proto", "vendor/hyper-util", "vendor/reqwest013", "vendor/hyper-rustls", "vendor/hyper-tls", "vendor/n0-dns-resolver"]
 members = [
   "iroh-base",
   "iroh-dns",
@@ -61,6 +61,8 @@ type_marked_deprecated = { required-update = "minor" }
 type_method_marked_deprecated = { required-update = "minor" }
 
 [patch.crates-io]
+noq = { path = "vendor/noq" }
+noq-proto = { path = "vendor/noq-proto" }
 # Workspace unification for registry users. Iroh and its HTTP dependencies also
 # declare direct source references so an external Git consumer needs no patches.
 hyper-util = { path = "vendor/hyper-util" }
