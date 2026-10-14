@@ -158,9 +158,11 @@ async fn policy_covers_all_fresh_transports_and_survives_reset() {
         DnsProtocol::Https,
     ] {
         let server = server(protocol).await;
+        let target = server.addr;
         let calls = Arc::new(Mutex::new(Vec::new()));
         let observed = calls.clone();
         let initializer = NativeSocketInitializer::new(move |socket, actual| {
+            assert_eq!(socket.peer_addr(), target, "initializer must receive the actual nameserver next hop");
             let socket = socket2::SockRef::from(&socket);
             match socket.local_addr() {
                 Ok(addr) => assert_eq!(

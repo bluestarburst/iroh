@@ -402,7 +402,7 @@ async fn connect_tcp(
         } else {
             tokio::net::TcpSocket::new_v6()?
         };
-        initialize.initialize(&socket).map_err(|error| {
+        initialize.initialize(&socket, address).map_err(|error| {
             e!(
                 DialError::SocketInitialization,
                 SocketInitializationError(error)

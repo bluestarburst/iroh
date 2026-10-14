@@ -853,7 +853,7 @@ fn connect(
 
     #[cfg(feature = "native-socket-initializer")]
     if let Some(initialize) = &config.socket_initializer {
-        initialize.initialize(&socket).map_err(|error| {
+        initialize.initialize(&socket, *addr).map_err(|error| {
             ConnectError::new(
                 "native TCP socket initialization refused",
                 socket_init::SocketInitializationError(error),

@@ -3,7 +3,11 @@ use std::{fmt, io, sync::Arc};
 
 /// Borrowed unused TCP descriptor. Configure synchronously; do not retain it.
 #[derive(Clone, Copy, Debug)]
-pub struct NativeTcpSocketRef<'a>(&'a socket2::Socket);
+pub struct NativeTcpSocketRef<'a>(&'a socket2::Socket, std::net::SocketAddr);
+impl NativeTcpSocketRef<'_> {
+    /// The connector's actual next-hop address, before bind/connect.
+    pub fn peer_addr(&self) -> std::net::SocketAddr { self.1 }
+}
 #[cfg(unix)]
 impl std::os::fd::AsFd for NativeTcpSocketRef<'_> {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
@@ -34,8 +38,8 @@ impl NativeTcpSocketInitializer {
     ) -> Self {
         Self(Arc::new(initialize))
     }
-    pub(super) fn initialize(&self, socket: &socket2::Socket) -> io::Result<()> {
-        (self.0)(NativeTcpSocketRef(socket))
+    pub(super) fn initialize(&self, socket: &socket2::Socket, peer: std::net::SocketAddr) -> io::Result<()> {
+        (self.0)(NativeTcpSocketRef(socket, peer))
     }
 }
 #[derive(Debug)]

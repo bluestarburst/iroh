@@ -7,7 +7,7 @@ use std::{fmt, io, sync::Arc};
 pub struct NativeTcpSocketRef<'a>(NativeTcpSocketKind<'a>);
 #[derive(Clone, Copy, Debug)]
 enum NativeTcpSocketKind<'a> {
-    Relay(&'a tokio::net::TcpSocket),
+    Relay(&'a tokio::net::TcpSocket, std::net::SocketAddr),
     Http(reqwest::NativeTcpSocketRef<'a>),
 }
 
@@ -15,7 +15,7 @@ enum NativeTcpSocketKind<'a> {
 impl std::os::fd::AsFd for NativeTcpSocketRef<'_> {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         match &self.0 {
-            NativeTcpSocketKind::Relay(socket) => std::os::fd::AsFd::as_fd(*socket),
+            NativeTcpSocketKind::Relay(socket, _) => std::os::fd::AsFd::as_fd(*socket),
             NativeTcpSocketKind::Http(socket) => std::os::fd::AsFd::as_fd(socket),
         }
     }
@@ -24,10 +24,20 @@ impl std::os::fd::AsFd for NativeTcpSocketRef<'_> {
 impl std::os::windows::io::AsSocket for NativeTcpSocketRef<'_> {
     fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
         match &self.0 {
-            NativeTcpSocketKind::Relay(socket) => {
+            NativeTcpSocketKind::Relay(socket, _) => {
                 std::os::windows::io::AsSocket::as_socket(*socket)
             }
             NativeTcpSocketKind::Http(socket) => std::os::windows::io::AsSocket::as_socket(socket),
+        }
+    }
+}
+
+impl NativeTcpSocketRef<'_> {
+    /// Actual relay/proxy/HTTP next hop selected by the existing connector.
+    pub fn peer_addr(&self) -> std::net::SocketAddr {
+        match self.0 {
+            NativeTcpSocketKind::Relay(_, peer) => peer,
+            NativeTcpSocketKind::Http(socket) => socket.peer_addr(),
         }
     }
 }
@@ -61,8 +71,8 @@ impl NativeTcpSocketInitializer {
         })
     }
 
-    pub(super) fn initialize(&self, socket: &tokio::net::TcpSocket) -> io::Result<()> {
-        (self.0)(NativeTcpSocketRef(NativeTcpSocketKind::Relay(socket)))
+    pub(super) fn initialize(&self, socket: &tokio::net::TcpSocket, peer: std::net::SocketAddr) -> io::Result<()> {
+        (self.0)(NativeTcpSocketRef(NativeTcpSocketKind::Relay(socket, peer)))
     }
 }
 

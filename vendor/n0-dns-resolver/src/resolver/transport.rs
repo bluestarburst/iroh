@@ -94,7 +94,7 @@ async fn connect_tcp(
             tokio::net::TcpSocket::new_v4()?
         };
         initializer
-            .tcp(&socket, _protocol)
+            .tcp(&socket, _protocol, addr)
             .map_err(|source| e!(TransportError::SocketPolicy { source }))?;
         return Ok(socket.connect(addr).await?);
     }
@@ -149,7 +149,7 @@ pub(super) async fn udp_query(
             socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
         socket.set_nonblocking(true)?;
         initializer
-            .udp(&socket)
+            .udp(&socket, addr)
             .map_err(|source| e!(TransportError::SocketPolicy { source }))?;
         socket.bind(&bind_addr.into())?;
         tokio::net::UdpSocket::from_std(socket.into())?

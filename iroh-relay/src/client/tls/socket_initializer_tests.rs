@@ -22,6 +22,8 @@ async fn tcp_policy_reaches_each_actual_attempt_before_connect() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let counted = attempts.clone();
     let initialize = NativeTcpSocketInitializer::new(move |socket| {
+        assert_eq!(socket.peer_addr().port(), port, "initializer must receive the bound relay's port");
+        assert!(matches!(socket.peer_addr().ip(), std::net::IpAddr::V4(ip) if ip == Ipv4Addr::new(127,0,0,2) || ip == Ipv4Addr::LOCALHOST));
         // This duplicate is a temporary socket-option mechanism, not a sender.
         // Inspect the real kernel descriptor before the dialer can connect it.
         let duplicate = std::net::TcpStream::from(socket.as_fd().try_clone_to_owned()?);

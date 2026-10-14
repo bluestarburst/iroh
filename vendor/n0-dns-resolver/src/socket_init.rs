@@ -6,7 +6,11 @@ use crate::DnsProtocol;
 /// An unused socket borrowed only for synchronous host configuration.
 /// Never retain its descriptor or create another connection owner.
 #[derive(Debug, Clone, Copy)]
-pub struct NativeSocketRef<'a>(SocketKind<'a>);
+pub struct NativeSocketRef<'a>(SocketKind<'a>, std::net::SocketAddr);
+impl NativeSocketRef<'_> {
+    /// Nameserver or HTTP/proxy next hop selected by the resolver's factory.
+    pub fn peer_addr(&self) -> std::net::SocketAddr { self.1 }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum SocketKind<'a> {
@@ -67,16 +71,17 @@ impl NativeSocketInitializer {
         Self(Arc::new(initialize))
     }
 
-    pub(crate) fn udp(&self, socket: &socket2::Socket) -> io::Result<()> {
-        (self.0)(NativeSocketRef(SocketKind::Udp(socket)), DnsProtocol::Udp)
+    pub(crate) fn udp(&self, socket: &socket2::Socket, peer: std::net::SocketAddr) -> io::Result<()> {
+        (self.0)(NativeSocketRef(SocketKind::Udp(socket), peer), DnsProtocol::Udp)
     }
 
     pub(crate) fn tcp(
         &self,
         socket: &tokio::net::TcpSocket,
         protocol: DnsProtocol,
+        peer: std::net::SocketAddr,
     ) -> io::Result<()> {
-        (self.0)(NativeSocketRef(SocketKind::Tcp(socket)), protocol)
+        (self.0)(NativeSocketRef(SocketKind::Tcp(socket), peer), protocol)
     }
 
     #[cfg(transport_https)]
@@ -84,7 +89,7 @@ impl NativeSocketInitializer {
         let initialize = self.clone();
         builder.native_tcp_socket_initializer(move |socket| {
             (initialize.0)(
-                NativeSocketRef(SocketKind::Http(socket)),
+                NativeSocketRef(SocketKind::Http(socket), socket.peer_addr()),
                 DnsProtocol::Https,
             )
             .map_err(|err| io::Error::other(PolicyRefusal(err)))
