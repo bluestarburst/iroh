@@ -21,7 +21,9 @@ use n0_future::{
     split::{SplitSink, SplitStream, split},
     time,
 };
-use tracing::{Level, debug, event, trace};
+#[cfg(all(not(wasm_browser), with_crypto_provider))]
+use tracing::{Level, event};
+use tracing::{debug, trace};
 use url::Url;
 
 pub use self::conn::{RecvError, SendError};
@@ -35,12 +37,16 @@ use crate::{
 };
 
 pub(crate) mod conn;
-#[cfg(not(wasm_browser))]
+#[cfg(all(not(wasm_browser), with_crypto_provider))]
 pub(crate) mod quic_stream;
+#[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+mod socket_init;
 #[cfg(not(wasm_browser))]
 pub(crate) mod streams;
 #[cfg(not(wasm_browser))]
 mod tls;
+#[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+pub use socket_init::{NativeTcpSocketInitializer, NativeTcpSocketRef, SocketInitializationError};
 #[cfg(not(wasm_browser))]
 mod util;
 
@@ -154,11 +160,19 @@ pub enum DialError {
     #[cfg(not(wasm_browser))]
     #[error("QUIC relay failed: {reason}")]
     Quic { reason: String },
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    #[error(transparent)]
+    SocketInitialization {
+        #[error(std_err)]
+        source: SocketInitializationError,
+    },
 }
 
 /// Build a Client.
 #[derive(derive_more::Debug, Clone)]
 pub struct ClientBuilder {
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_tcp_socket_initializer: Option<NativeTcpSocketInitializer>,
     /// Default is None
     #[debug("address family selector callback")]
     address_family_selector: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
@@ -193,6 +207,8 @@ impl ClientBuilder {
         #[cfg(not(wasm_browser))] dns_resolver: DnsResolver,
     ) -> Self {
         ClientBuilder {
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_tcp_socket_initializer: None,
             address_family_selector: None,
             url: url.into(),
             tls_config: None,
@@ -205,6 +221,14 @@ impl ClientBuilder {
             transport_policy: RelayTransportPolicy::WebsocketRequired,
             quic_port: crate::defaults::DEFAULT_RELAY_QUIC_DATA_PORT,
         }
+    }
+
+    /// Configure each native relay/proxy TCP socket before connect. This partial
+    /// constructor capability is not complete VPN underlay protection.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub fn native_tcp_socket_initializer(mut self, initialize: NativeTcpSocketInitializer) -> Self {
+        self.native_tcp_socket_initializer = Some(initialize);
+        self
     }
 
     /// Sets a custom TLS config.
@@ -347,6 +371,11 @@ impl ClientBuilder {
             MaybeTlsStreamBuilder::new(dial_url.clone(), self.dns_resolver.clone(), tls_config)
                 .prefer_ipv6(self.prefer_ipv6())
                 .proxy_url(self.proxy_url.clone());
+        #[cfg(feature = "native-tcp-socket-initializer")]
+        {
+            builder =
+                builder.native_tcp_socket_initializer(self.native_tcp_socket_initializer.clone());
+        }
 
         let stream = builder.connect().await?;
         let local_addr = stream
@@ -426,7 +455,7 @@ impl ClientBuilder {
     }
 
     /// Establishes a new QUIC stream connection to the relay server.
-    #[cfg(not(wasm_browser))]
+    #[cfg(all(not(wasm_browser), with_crypto_provider))]
     fn quic_dial_error(reason: impl Into<String>) -> ConnectError {
         e!(
             ConnectError::Dial,
@@ -437,7 +466,12 @@ impl ClientBuilder {
     }
 
     /// Establishes a new QUIC stream connection to the relay server.
-    #[cfg(not(wasm_browser))]
+    #[cfg(all(not(wasm_browser), not(with_crypto_provider)))]
+    fn connect_quic(&self) -> std::future::Ready<Result<Client, ConnectError>> {
+        std::future::ready(Err(e!(ConnectError::MissingCryptoProvider)))
+    }
+
+    #[cfg(all(not(wasm_browser), with_crypto_provider))]
     async fn connect_quic(&self) -> Result<Client, ConnectError> {
         use noq::crypto::rustls::QuicClientConfig;
 

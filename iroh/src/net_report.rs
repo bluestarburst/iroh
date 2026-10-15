@@ -270,6 +270,8 @@ impl Client {
 
         #[cfg(not(wasm_browser))]
         let socket_state = SocketState {
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            native_tcp_socket_initializer: opts.native_tcp_socket_initializer,
             quic_client,
             dns_resolver,
             proxy_url: opts.proxy_url,
@@ -1008,6 +1010,67 @@ mod tests {
 
     use super::*;
     use crate::net_report::probes::Probe;
+
+    #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+    #[tokio::test]
+    async fn native_http_policy_reaches_report_owner_and_refuses_latency() -> Result<()> {
+        use std::{
+            os::fd::AsFd,
+            sync::atomic::{AtomicUsize, Ordering},
+        };
+        let (server, relay) = test_utils::relay().await;
+        for refuse in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let initialize = iroh_relay::client::NativeTcpSocketInitializer::new(move |socket| {
+                let duplicate = std::net::TcpStream::from(socket.as_fd().try_clone_to_owned()?);
+                assert_eq!(
+                    duplicate.local_addr()?.port(),
+                    0,
+                    "probe policy must precede bind"
+                );
+                assert!(
+                    duplicate.peer_addr().is_err(),
+                    "probe policy must precede connect"
+                );
+                observed.fetch_add(1, Ordering::SeqCst);
+                if refuse {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "net-report-policy-refusal",
+                    ));
+                }
+                duplicate.set_ttl(31)?;
+                assert_eq!(duplicate.ttl()?, 31);
+                Ok(())
+            });
+            let tls = CaTlsConfig::insecure_skip_verify()
+                .client_config(default_provider())
+                .expect("local fixture TLS");
+            let opts = Options::new(tls).native_tcp_socket_initializer(Some(initialize));
+            let mut client = Client::new(
+                DnsResolver::new(),
+                RelayMap::from(relay.clone()),
+                opts,
+                Default::default(),
+            );
+            let report = client
+                .get_report(IfStateDetails::fake(), false, CancellationToken::new())
+                .await;
+            assert!(
+                calls.load(Ordering::SeqCst) > 0,
+                "constructor policy did not reach the network-report HTTPS factory"
+            );
+            assert_eq!(
+                report.relay_latency.is_empty(),
+                refuse,
+                "a refused probe cannot contribute a successful relay latency"
+            );
+            drop(client);
+        }
+        server.shutdown().await?;
+        Ok(())
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]

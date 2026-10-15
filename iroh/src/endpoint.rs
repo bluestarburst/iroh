@@ -94,6 +94,8 @@ pub(crate) mod quic;
 #[cfg(not(wasm_browser))]
 pub use bind::{BindOpts, InvalidSocketAddr, ToSocketAddr};
 pub use hooks::{AfterHandshakeOutcome, BeforeConnectOutcome, EndpointHooks};
+#[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+pub use netwatch::{IpFamily as NativeUdpIpFamily, SocketRef as NativeUdpSocketRef};
 
 #[cfg(feature = "qlog")]
 pub use self::quic::{QlogConfig, QlogFactory, QlogFileFactory};
@@ -140,6 +142,14 @@ pub struct Builder {
     /// Default address filter applied to all address lookup services added via
     /// [`Builder::address_lookup`].
     addr_filter: Option<AddrFilter>,
+    #[cfg(not(wasm_browser))]
+    excluded_ip_networks: Vec<ipnet::IpNet>,
+    #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+    native_udp_bind_options: Option<netwatch::BindOptions>,
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_relay_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    native_dns_socket_initializer: Option<crate::dns::NativeSocketInitializer>,
     proxy_url: Option<Url>,
     ca_tls_config: Option<CaTlsConfig>,
     #[cfg(not(wasm_browser))]
@@ -211,6 +221,14 @@ impl Builder {
             address_lookup: Default::default(),
             address_lookup_user_data: Default::default(),
             addr_filter: None,
+            #[cfg(not(wasm_browser))]
+            excluded_ip_networks: Vec::new(),
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options: None,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: None,
+            #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+            native_dns_socket_initializer: None,
             proxy_url: None,
             ca_tls_config: None,
             #[cfg(not(wasm_browser))]
@@ -277,17 +295,35 @@ impl Builder {
             .map_err(|err| e!(BindError::InvalidCaRootConfig, err))?;
 
         #[cfg(not(wasm_browser))]
-        let dns_resolver = self.dns_resolver.unwrap_or_else(|| {
-            DnsResolver::builder()
-                .with_system_defaults()
-                .tls_client_config(tls_config.clone())
-                .build()
-        });
+        let dns_resolver = {
+            #[cfg(feature = "native-dns-socket-initializer")]
+            if self.native_dns_socket_initializer.is_some() && self.dns_resolver.is_some() {
+                return Err(e!(BindError::NativeDnsResolverConflict));
+            }
+            self.dns_resolver.unwrap_or_else(|| {
+                let builder = DnsResolver::builder()
+                    .with_system_defaults()
+                    .tls_client_config(tls_config.clone());
+                #[cfg(feature = "native-dns-socket-initializer")]
+                let builder = if let Some(initializer) = self.native_dns_socket_initializer {
+                    builder.native_socket_initializer(initializer)
+                } else {
+                    builder
+                };
+                builder.build()
+            })
+        };
 
         let sock_opts = socket::Options {
             transports: self.transports,
+            #[cfg(not(wasm_browser))]
+            excluded_ip_networks: self.excluded_ip_networks,
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options: self.native_udp_bind_options,
             secret_key,
             address_lookup_user_data: self.address_lookup_user_data,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: self.native_relay_tcp_socket_initializer,
             proxy_url: self.proxy_url,
             #[cfg(not(wasm_browser))]
             dns_resolver,
@@ -647,6 +683,82 @@ impl Builder {
     /// [`AddressLookupServices`]: crate::address_lookup::AddressLookupServices
     pub fn addr_filter(mut self, filter: AddrFilter) -> Self {
         self.addr_filter = Some(filter);
+        self
+    }
+
+    /// Excludes native IP networks from direct address discovery, QNT and UDP I/O.
+    ///
+    /// Unlike [`Self::addr_filter`], this also prevents explicit or in-band IP
+    /// candidates from sending through an overlay network. Relay/custom transports
+    /// are unchanged. Empty exclusions preserve default native IP behavior.
+    #[cfg(not(wasm_browser))]
+    pub fn excluded_ip_networks(mut self, networks: Vec<ipnet::IpNet>) -> Self {
+        self.excluded_ip_networks = networks;
+        self
+    }
+
+    /// Configure each native IP transport UDP socket before bind, including replacements
+    /// allocated by Netwatch during rebind. An initializer error fails endpoint
+    /// bind even for an optional IP family; a failed rebind remains closed.
+    ///
+    /// This does not protect DNS, relay TCP/QUIC or custom carrier sockets and
+    /// is not a complete VPN underlay capability. The callback must be bounded
+    /// and must not create a second peer lifecycle or recovery owner.
+    #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+    pub fn native_udp_socket_initializer(
+        mut self,
+        initialize: impl Fn(NativeUdpSocketRef<'_>, NativeUdpIpFamily) -> std::io::Result<()>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.native_udp_bind_options = Some(netwatch::BindOptions::new().configure_socket(
+            move |socket, family| {
+                initialize(socket, family).map_err(|error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        crate::socket::transports::SocketInitializerFailure(error),
+                    )
+                })
+            },
+        ));
+        self
+    }
+
+    /// Configure the default native DNS resolver before any socket is created.
+    /// Retains this endpoint's TLS trust, system configuration, fallback and
+    /// reset behavior. A separately supplied custom resolver is refused because
+    /// the endpoint cannot install this policy into an opaque resolver.
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    pub fn native_dns_socket_initializer(
+        mut self,
+        initialize: impl for<'a> Fn(
+            crate::dns::NativeSocketRef<'a>,
+            crate::dns::NativeSocketProtocol,
+        ) -> std::io::Result<()>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.native_dns_socket_initializer =
+            Some(crate::dns::NativeSocketInitializer::new(initialize));
+        self
+    }
+
+    /// Configure native relay/proxy and network-report HTTP TCP sockets before connect.
+    /// The existing relay actor retains this constructor input across dials.
+    /// DNS, QUIC relay, gateway and custom carriers are outside this partial input.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub fn native_relay_tcp_socket_initializer(
+        mut self,
+        initialize: impl for<'a> Fn(iroh_relay::client::NativeTcpSocketRef<'a>) -> std::io::Result<()>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.native_relay_tcp_socket_initializer = Some(
+            iroh_relay::client::NativeTcpSocketInitializer::new(initialize),
+        );
         self
     }
 
@@ -1529,6 +1641,13 @@ impl Endpoint {
         Ok(self.inner.dns_resolver())
     }
 
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub(crate) fn native_tcp_socket_initializer(
+        &self,
+    ) -> Option<iroh_relay::client::NativeTcpSocketInitializer> {
+        self.inner.native_tcp_socket_initializer()
+    }
+
     /// Returns the [`rustls::ClientConfig`] used by the endpoint for connecting to external services.
     ///
     /// This might be useful for address lookup services or other functions
@@ -1672,6 +1791,14 @@ impl Endpoint {
         &self.inner.metrics
     }
 
+    /// Request a fresh selection after an application changes its configured
+    /// path policy. Uses the existing remote actor and existing open paths;
+    /// never creates a connection or starts discovery. Returns false when the
+    /// endpoint/actor is closed or the bounded actor mailbox is full.
+    pub fn request_path_reselection(&self, endpoint_id: EndpointId) -> bool {
+        !self.is_closed() && self.inner.request_path_reselection(endpoint_id)
+    }
+
     /// Returns addressing information about a recently used remote endpoint.
     ///
     /// The returned [`RemoteInfo`] contains a list of all transport addresses for the remote
@@ -1730,6 +1857,27 @@ impl Endpoint {
             return;
         }
         self.inner.network_change().await;
+    }
+
+    /// Replaces native IP exclusions on this existing endpoint.
+    ///
+    /// The update fences final UDP sends immediately and prunes the shared local
+    /// candidate set before returning. Existing network-change machinery refreshes
+    /// discovery and QNT; this adds no endpoint, admission or retry owner. Callers
+    /// installing an overlay must apply exclusions before creating its routes,
+    /// and retain them until the owned routes have been removed.
+    #[cfg(not(wasm_browser))]
+    pub async fn set_excluded_ip_networks(
+        &self,
+        networks: Vec<ipnet::IpNet>,
+    ) -> std::io::Result<()> {
+        if self.is_closed() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "endpoint is closed",
+            ));
+        }
+        self.inner.set_excluded_ip_networks(networks).await
     }
 
     // # Methods to update internal state.
@@ -2161,7 +2309,12 @@ mod tests {
     use tokio::sync::oneshot;
     use tracing::{Instrument, debug_span, error_span, info, info_span, instrument};
 
-    use super::{Builder, Endpoint};
+    #[cfg(any(
+        feature = "unstable-custom-transports",
+        all(unix, feature = "native-tcp-socket-initializer")
+    ))]
+    use super::Builder;
+    use super::Endpoint;
     use crate::{
         RelayMap, RelayMode,
         address_lookup::memory::MemoryLookup,
@@ -2175,6 +2328,50 @@ mod tests {
             QlogFileGroup, run_relay_server, run_relay_server_with, run_relay_server_with_access,
         },
     };
+
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    #[tokio::test]
+    async fn native_dns_constructor_reaches_default_resolver() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .native_dns_socket_initializer(move |_, _| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "endpoint DNS policy",
+                ))
+            })
+            .bind()
+            .await
+            .unwrap();
+        let result = endpoint
+            .dns_resolver()
+            .unwrap()
+            .lookup_ipv4("refused.invalid.", std::time::Duration::from_secs(1))
+            .await;
+        endpoint.close().await;
+        assert!(matches!(
+            result,
+            Err(crate::dns::DnsError::SocketPolicy { .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    #[tokio::test]
+    async fn native_dns_policy_cannot_be_claimed_for_a_custom_resolver() {
+        let result = Endpoint::builder(presets::Minimal)
+            .dns_resolver(crate::dns::DnsResolver::new())
+            .native_dns_socket_initializer(|_, _| panic!("custom resolver policy must not run"))
+            .bind()
+            .await;
+        assert!(matches!(
+            result,
+            Err(BindError::NativeDnsResolverConflict { .. })
+        ));
+    }
 
     const TEST_ALPN: &[u8] = b"n0/iroh/test";
 
@@ -2471,18 +2668,46 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn endpoint_send_relay() -> Result {
-        let (relay_map, _relay_url, _guard) = run_relay_server().await?;
-        let client = Endpoint::builder(presets::Minimal)
+        let (relay_map, relay_url, _guard) = run_relay_server().await?;
+        // Exercise the endpoint constructor -> retained relay actor -> dialer
+        // boundary, which standalone relay-client tests cannot reach.
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        let counts = [
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        ];
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        let configure =
+            |builder: Builder, counter: std::sync::Arc<std::sync::atomic::AtomicUsize>| {
+                builder
+                    .clear_ip_transports()
+                    .native_relay_tcp_socket_initializer(move |socket| {
+                        use std::os::fd::AsFd;
+                        let duplicate =
+                            std::net::TcpStream::from(socket.as_fd().try_clone_to_owned()?);
+                        assert!(
+                            duplicate.peer_addr().is_err(),
+                            "relay actor configured an already connected socket"
+                        );
+                        duplicate.set_ttl(31)?;
+                        assert_eq!(duplicate.ttl()?, 31);
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    })
+            };
+        let client_builder = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Custom(relay_map.clone()))
-            .ca_tls_config(CaTlsConfig::insecure_skip_verify())
-            .bind()
-            .await?;
-        let server = Endpoint::builder(presets::Minimal)
+            .ca_tls_config(CaTlsConfig::insecure_skip_verify());
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        let client_builder = configure(client_builder, counts[0].clone());
+        let client = client_builder.bind().await?;
+        let server_builder = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Custom(relay_map))
             .ca_tls_config(CaTlsConfig::insecure_skip_verify())
-            .alpns(vec![TEST_ALPN.to_vec()])
-            .bind()
-            .await?;
+            .alpns(vec![TEST_ALPN.to_vec()]);
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        let server_builder = configure(server_builder, counts[1].clone());
+        let server = server_builder.bind().await?;
 
         let task = tokio::spawn({
             let server = server.clone();
@@ -2501,8 +2726,10 @@ mod tests {
             }
         });
 
-        let addr = server.addr();
-        let conn = client.connect(addr, TEST_ALPN).await?;
+        let addr = crate::EndpointAddr::new(server.id()).with_relay_url(relay_url);
+        let conn = tokio::time::timeout(Duration::from_secs(10), client.connect(addr, TEST_ALPN))
+            .await
+            .std_context("relay-only policy connection timed out")??;
         let (mut send, mut recv) = conn.open_bi().await.anyerr()?;
         send.write_all(b"Hello, world!").await.anyerr()?;
         send.finish().anyerr()?;
@@ -2515,6 +2742,13 @@ mod tests {
         server.close().await;
 
         assert_eq!(&data, b"Hello, world!");
+        #[cfg(all(unix, feature = "native-tcp-socket-initializer"))]
+        for count in counts {
+            assert!(
+                count.load(std::sync::atomic::Ordering::SeqCst) > 0,
+                "endpoint constructor policy did not reach its live relay actor"
+            );
+        }
 
         Ok(())
     }

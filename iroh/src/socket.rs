@@ -170,6 +170,10 @@ impl From<mpsc::error::SendError<RemoteStateMessage>> for RemoteStateActorStoppe
 pub(crate) struct Options {
     /// The configuration for the different transports.
     pub(crate) transports: Vec<TransportConfig>,
+    #[cfg(not(wasm_browser))]
+    pub(crate) excluded_ip_networks: Vec<ipnet::IpNet>,
+    #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+    pub(crate) native_udp_bind_options: Option<netwatch::BindOptions>,
 
     /// Secret key for this endpoint.
     pub(crate) secret_key: SecretKey,
@@ -189,6 +193,9 @@ pub(crate) struct Options {
     pub(crate) relay_transport_policy: RelayTransportPolicy,
 
     /// Proxy configuration.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub(crate) native_relay_tcp_socket_initializer:
+        Option<iroh_relay::client::NativeTcpSocketInitializer>,
     pub(crate) proxy_url: Option<Url>,
 
     /// TLS configuration for HTTPS and non-iroh-QUIC connections.
@@ -362,6 +369,8 @@ pub(crate) struct Socket {
     // - Networking Info
     /// Our discovered direct addresses.
     direct_addrs: DiscoveredDirectAddrs,
+    #[cfg(not(wasm_browser))]
+    ip_policy: crate::ip_transport_policy::IpTransportPolicy,
     /// Our latest net-report
     net_report: Watchable<(Option<Report>, UpdateReason)>,
     /// If the last net_report report, reports IPv6 to be available.
@@ -378,6 +387,8 @@ pub(crate) struct Socket {
     /// The DNS resolver to be used in this socket.
     #[cfg(not(wasm_browser))]
     dns_resolver: DnsResolver,
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_relay_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
     relay_map: RelayMap,
 
     /// Optional Address Lookup
@@ -439,6 +450,11 @@ impl Socket {
         self.local_addr()
             .into_iter()
             .filter_map(|addr| addr.into_socket_addr())
+    }
+
+    pub(crate) fn request_path_reselection(&self, endpoint_id: EndpointId) -> bool {
+        self.try_send_remote_state_msg(endpoint_id, RemoteStateMessage::ReselectPath)
+            .is_ok()
     }
 
     /// Tries to send a [`RemoteStateMessage`] to the `RemoteStateActor` for given [`EndpointId`].
@@ -517,11 +533,27 @@ impl Socket {
         self.home_relay_watch.clone()
     }
 
-    /// Stores a new set of direct addresses.
-    ///
-    /// If the direct addresses have changed from the previous set, they are published to
-    /// the address lookup system.
+    #[cfg(not(wasm_browser))]
+    fn apply_ip_exclusions(&self, networks: Vec<ipnet::IpNet>) -> io::Result<()> {
+        self.ip_policy.replace(networks)?;
+        self.store_direct_addresses(self.direct_addrs.addrs.get());
+        Ok(())
+    }
+
+    /// Stores the shared direct-address set used by publication and QNT.
     fn store_direct_addresses(&self, addrs: BTreeSet<DirectAddr>) {
+        #[cfg(not(wasm_browser))]
+        let policy = self.ip_policy.read();
+        #[cfg(not(wasm_browser))]
+        let addrs = match &policy {
+            Ok(policy) => addrs
+                .into_iter()
+                .filter(|addr| policy.allows(addr.addr.ip()))
+                .collect(),
+            Err(_) => BTreeSet::new(),
+        };
+        // Keep the native read guard through this write and publication. A
+        // policy update cannot race a stale local/QNT candidate publication.
         let updated = self.direct_addrs.update(addrs);
         if updated {
             self.publish_my_addr();
@@ -532,6 +564,14 @@ impl Socket {
     #[cfg(not(wasm_browser))]
     pub(crate) fn dns_resolver(&self) -> &DnsResolver {
         &self.dns_resolver
+    }
+
+    // Shared constructor input for endpoint-owned HTTP discovery factories.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub(crate) fn native_tcp_socket_initializer(
+        &self,
+    ) -> Option<iroh_relay::client::NativeTcpSocketInitializer> {
+        self.native_relay_tcp_socket_initializer.clone()
     }
 
     /// Translates a possible IP-mapped [`SocketAddr`] into a [`transports::Addr`].
@@ -874,6 +914,10 @@ pub enum BindError {
         #[error(from)]
         source: tls::TlsConfigError,
     },
+    /// Native DNS policy cannot be installed into an opaque custom resolver.
+    #[cfg(all(not(wasm_browser), feature = "native-dns-socket-initializer"))]
+    #[error("Native DNS initializer requires the endpoint-owned default resolver")]
+    NativeDnsResolverConflict,
 }
 
 impl EndpointInner {
@@ -887,11 +931,17 @@ impl EndpointInner {
         let Options {
             secret_key,
             transports: transport_configs,
+            #[cfg(not(wasm_browser))]
+            excluded_ip_networks,
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options,
             address_lookup_user_data,
             #[cfg(not(wasm_browser))]
             dns_resolver,
             #[cfg(not(wasm_browser))]
             relay_transport_policy,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer,
             proxy_url,
             server_config,
             tls_config,
@@ -939,6 +989,8 @@ impl EndpointInner {
             dns_resolver: dns_resolver.clone(),
             #[cfg(not(wasm_browser))]
             relay_transport_policy,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: native_relay_tcp_socket_initializer.clone(),
             proxy_url: proxy_url.clone(),
             ipv6_reported: ipv6_reported.clone(),
             tls_config: tls_config.clone(),
@@ -949,13 +1001,23 @@ impl EndpointInner {
         let shutdown_state = ShutdownState::default();
         let shutdown_token = shutdown_state.at_endpoint_closed.child_token();
 
+        #[cfg(not(wasm_browser))]
+        let ip_policy = crate::ip_transport_policy::IpTransportPolicy::new(excluded_ip_networks);
         let transports = Transports::bind(
             &transport_configs,
             relay_actor_config,
             &metrics,
             shutdown_token.child_token(),
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options.as_ref(),
         )
         .map_err(|err| e!(BindError::Sockets, err))?;
+        #[cfg(not(wasm_browser))]
+        let transports = {
+            let mut transports = transports;
+            transports.set_ip_policy(ip_policy.clone());
+            transports
+        };
 
         if let Some(v4_port) = transports.local_addrs().into_iter().find_map(|t| {
             if let transports::Addr::Ip(SocketAddr::V4(addr)) = t {
@@ -992,7 +1054,11 @@ impl EndpointInner {
                 direct_addrs.addrs.watch(),
                 address_lookup.clone(),
                 shutdown_token.child_token(),
-                path_selector,
+                remote_map::PathOptions {
+                    selector: path_selector,
+                    #[cfg(not(wasm_browser))]
+                    ip_policy: ip_policy.clone(),
+                },
                 custom_transport_path_liveness,
                 span.clone(),
             )
@@ -1010,9 +1076,13 @@ impl EndpointInner {
             address_lookup_user_data: RwLock::new(address_lookup_user_data),
             configured_addrs: RwLock::new(configured_addrs),
             direct_addrs,
+            #[cfg(not(wasm_browser))]
+            ip_policy,
             net_report: Watchable::new((None, UpdateReason::None)),
             #[cfg(not(wasm_browser))]
             dns_resolver: dns_resolver.clone(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: native_relay_tcp_socket_initializer.clone(),
             metrics: metrics.clone(),
             local_addrs_watch: transports.local_addrs_watch(),
             home_relay_watch,
@@ -1063,10 +1133,13 @@ impl EndpointInner {
                 ipv4: true,
                 ipv6: has_ipv6_transport,
             });
-            net_report::Options::new(tls_config.clone())
+            let config = net_report::Options::new(tls_config.clone())
                 .quic_config(qad_config)
                 .proxy_url(proxy_url.clone())
-                .net_report_config(net_report_config)
+                .net_report_config(net_report_config);
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            let config = config.native_tcp_socket_initializer(native_relay_tcp_socket_initializer);
+            config
         };
 
         #[cfg(wasm_browser)]
@@ -1299,6 +1372,21 @@ impl EndpointInner {
         removed
     }
 
+    /// Commits one host IP policy input through the existing socket actor.
+    #[cfg(not(wasm_browser))]
+    pub(crate) async fn set_excluded_ip_networks(
+        &self,
+        networks: Vec<ipnet::IpNet>,
+    ) -> io::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.actor_sender
+            .send(ActorMessage::IpExclusions(networks, tx))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "endpoint actor stopped"))?;
+        rx.await
+            .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "endpoint actor stopped"))?
+    }
+
     /// Call to notify the system of potential network changes.
     pub(crate) async fn network_change(&self) {
         self.actor_sender
@@ -1422,6 +1510,8 @@ impl EndpointInner {
 #[derive(derive_more::Debug)]
 #[allow(clippy::enum_variant_names)]
 enum ActorMessage {
+    #[cfg(not(wasm_browser))]
+    IpExclusions(Vec<ipnet::IpNet>, oneshot::Sender<io::Result<()>>),
     NetworkChange,
     RelayMapChange,
     #[debug("ResolveRemote(..)")]
@@ -1720,6 +1810,16 @@ impl Actor {
             self.re_stun(UpdateReason::LinkChangeMinor);
         }
 
+        // Native interface facts are already current here. Refresh the shared
+        // publication/QNT source immediately instead of retaining removed local
+        // addresses until an asynchronous STUN/relay report changes. The report
+        // owner still refreshes external mappings through its existing path.
+        #[cfg(not(wasm_browser))]
+        {
+            let (report, _) = self.sock.net_report.get();
+            self.update_direct_addresses(report.as_ref());
+        }
+
         if self.has_usable_network() {
             // This is considered a usable network change, propagate it to the QUIC stack
             // right away.
@@ -1821,6 +1921,16 @@ impl Actor {
     /// Returns `true` if it was a shutdown.
     async fn handle_actor_message(&mut self, msg: ActorMessage) {
         match msg {
+            #[cfg(not(wasm_browser))]
+            ActorMessage::IpExclusions(networks, tx) => {
+                let result = self.sock.apply_ip_exclusions(networks);
+                if result.is_ok() {
+                    let (report, _) = self.sock.net_report.get();
+                    self.update_direct_addresses(report.as_ref());
+                    self.remote_map.on_ip_policy_change().await;
+                }
+                let _ = tx.send(result);
+            }
             ActorMessage::NetworkChange => {
                 self.network_monitor.network_change().await.ok();
             }
@@ -2212,11 +2322,16 @@ mod tests {
         };
         let server_config = static_config.create_server_config(vec![]);
         Options {
+            excluded_ip_networks: Vec::new(),
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options: None,
             transports: vec![
                 TransportConfig::default_ipv4(),
                 TransportConfig::default_ipv6(),
             ],
             secret_key,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: None,
             proxy_url: None,
             dns_resolver: DnsResolver::new(),
             relay_transport_policy: Default::default(),
@@ -2631,6 +2746,9 @@ mod tests {
 
         let dns_resolver = DnsResolver::new();
         let opts = Options {
+            excluded_ip_networks: Vec::new(),
+            #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+            native_udp_bind_options: None,
             transports: vec![
                 TransportConfig::default_ipv4(),
                 TransportConfig::default_ipv6(),
@@ -2639,6 +2757,8 @@ mod tests {
             address_lookup_user_data: None,
             dns_resolver,
             relay_transport_policy: Default::default(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: None,
             proxy_url: None,
             server_config,
             tls_config: CaTlsConfig::default()
@@ -2925,3 +3045,12 @@ mod tests {
         // But we don't have that much private access to the RemoteMap.  This will do for now.
     }
 }
+
+#[cfg(all(
+    test,
+    with_crypto_provider,
+    not(wasm_browser),
+    feature = "native-udp-socket-initializer"
+))]
+#[path = "socket/native_socket_initializer_tests.rs"]
+mod native_socket_initializer_tests;

@@ -107,7 +107,7 @@ jobs:
     name: Android Build & Test
     if: "github.event_name != 'pull_request' || ! contains(github.event.pull_request.labels.*.name, 'flaky-test')"
     timeout-minutes: 30
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ${{ fromJSON(github.repository_owner == 'n0-computer' && '["self-hosted","linux","X64"]' || '["ubuntu-latest"]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -144,6 +144,8 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: platform-tools
 
       # Pinned to a release tag (rather than @main) for supply-chain hygiene.
       - name: Setup Android NDK
@@ -243,7 +245,9 @@ jobs:
             adb root && adb wait-for-device
             adb shell sysctl -w net.ipv6.conf.all.disable_ipv6=1 || true
             adb shell sysctl -w net.ipv6.conf.default.disable_ipv6=1 || true
-            adb shell sysctl -w net.ipv6.conf.lo.disable_ipv6=1 || true
+            # Keep local IPv6 available for real dual-family QNT/policy tests.
+            adb shell sysctl -w net.ipv6.conf.lo.disable_ipv6=0
+            adb shell 'ip -6 addr show dev lo | grep -q "inet6 ::1/128"'
             adb shell ip addr
             # Sweep leftover test binaries out of the guest. `force-avd-creation: false`
             # keeps the AVD between jobs, and `-no-snapshot` only disables the *RAM*
@@ -613,4 +617,4 @@ jobs:
           path: ~/.cache/pip
           key: pip-codespell-2.4.1
       - run: pip install --user codespell[toml]==2.4.1
-      - run: codespell --ignore-words-list=ans,atmost,crate,inout,ratatui,ser,stayin,swarmin,worl,keep-alives --skip=CHANGELOG.md
+      - run: codespell --ignore-words-list=ans,atmost,crate,inout,ratatui,ser,stayin,swarmin,worl,keep-alives --skip='CHANGELOG.md,./vendor/hyper-util/*,./vendor/reqwest013/*,./vendor/hyper-rustls/*,./vendor/hyper-tls/*,./vendor/n0-dns-resolver/*'

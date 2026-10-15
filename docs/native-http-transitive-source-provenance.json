@@ -1,0 +1,56 @@
+{
+  "vendoredTlsConnectors": [
+    {
+      "crate": "hyper-rustls",
+      "version": "0.27.9",
+      "registryManifestSha256": "6344e0177a7bc51e558ac09adb3992dd8aa5925a7ae25f09b40c421dbe5d6b89",
+      "changes": "Only hyper-util dependency path; upstream runtime source unchanged",
+      "unchangedRuntimeSources": {
+        "src/config.rs": "811c91b6081a7f8306b3e00ff7d32714c9cdad19cad06a2ac51fe4e7d089e8f8",
+        "src/connector/builder.rs": "3fb10ed3bb2d0be47193fb88e3fe388576cfcba5e884dc1e5a3bce7cdaa12497",
+        "src/connector.rs": "3ed1596650cc01555406f7adb3950f097eb31b787543f15c569464c5e73aa013",
+        "src/lib.rs": "4f55e7914274119123eb563033cc7a8bfc2536d9191f8ddd20943e3c44bf90e2",
+        "src/stream.rs": "49039649158136eec6e0dec37bb4ab6459fd58cfe821f65b4a578da3e9f4e39a"
+      }
+    },
+    {
+      "crate": "hyper-tls",
+      "version": "0.6.0",
+      "registryManifestSha256": "a6c37b683eda329abcbe9fd9eba554ad9fac442c1a44dbd5c801aa1e6af3071a",
+      "changes": "Hyper-util dependency path; removed copied upstream workflow/gitignore; trimmed extra blank license EOF line. Runtime source and license text unchanged.",
+      "unchangedRuntimeSources": {
+        "src/client.rs": "e84fd214f2e3343e17b37606d2362ad88c4281d212dbf1c13e11cf9728fd8ba9",
+        "src/lib.rs": "7be7f215f1c0a674697337eac20a312ed31f3009dc2b353d1976fcbc87454aa4",
+        "src/stream.rs": "99dd6700f1876241ac421d463c0dcd0eeb61c6792961566f9a6be3d05196c3d0"
+      }
+    }
+  ],
+  "purpose": "Explicit path dependencies preserve one Hyper connector type across Reqwest TLS without downstream root patches. Git consumers can resolve the complete source cohort; crates.io publication remains gated.",
+  "regression": {
+    "before": "A fresh external Cargo root with Iroh native-tcp-socket-initializer and no patches fails dependency resolution because registry Reqwest lacks the feature.",
+    "after": "Fresh external Cargo root with no patches resolves and compiles the native socket policy feature. A newer Tokio codec added Encoder<&[u8]> alongside Encoder<Bytes>; relay Sink polling now explicitly selects the existing Bytes item.",
+    "publication": "Path+version dependencies become registry dependencies in crate packages. Crates.io publication remains gated until the modified HTTP libraries have a distributable published identity or upstream release."
+  },
+  "validation": {
+    "standaloneNative": "passed",
+    "pkarrOwnerTests": "6 passed including endpoint forwarding and refusal",
+    "httpsReportOwnerTests": "2 passed including proxy route",
+    "relayClippy": "passed with warnings denied",
+    "ownedWorkspaceFormat": "passed; virtual-root cargo fmt omits --all to avoid rewriting upstream path dependencies",
+    "wasm": "Fresh external root passed wasm32-unknown-unknown compile with LLVM target compiler (first attempt used incompatible Xcode C compiler).",
+    "standaloneNativeAllFeatures": "Passed fresh external Cargo root with every Iroh feature enabled, no root patches."
+  },
+  "validationLogSha256": {
+    "/tmp/proxy-vpn-iroh-transitive-before.log": "aa958fde26173226b588d33882ed4315e10fe04b27a8bb4660dbc60e297d9c79",
+    "/tmp/proxy-vpn-iroh-transitive-standalone-check-v2.log": "9468bf3d0d4fbaeafad0ef7d86b105c52b9958e70ecdc3677c3a08acaeee9735",
+    "/tmp/proxy-vpn-iroh-transitive-pkarr-tests.log": "e17fa0c3262b31db4e23ad90956bc18939744a15d1f227fd7ba8b04f5501cb08",
+    "/tmp/proxy-vpn-iroh-transitive-http-report-tests.log": "feca67dc6c0b3b1caa74ceaf051f6c7d553f08730b4cecd654403b9541fa997b",
+    "/tmp/proxy-vpn-iroh-transitive-relay-clippy.log": "836c7071fc3fb48d08fdf39f1482606620687f8185e97e77ed92493d0dc0a10f",
+    "/tmp/proxy-vpn-iroh-transitive-standalone-wasm-v2.log": "07cd711a50b504248cdbb80b0e46d45ca6fa476f390f2b1da13fa74fab7d8c0a",
+    "/tmp/proxy-vpn-iroh-transitive-standalone-all-features.log": "5796b978033a8d5965f430844a3d821645cf740f9d4a33e7e55731d047fc66f2"
+  },
+  "externalConsumer": {
+    "manifestSha256": "5a6859528fc82d7e8d4d34b584fc94b54cce530b4e8649f02c0087c0004d4ce1",
+    "lockSha256": "89e46e9fc6ab35e48bdca94257eeca477cefef670f497854e60e96f1323c48ad"
+  }
+}

@@ -156,6 +156,8 @@ pub struct PkarrPublisherBuilder {
     filter: AddrFilter,
     #[cfg(not(wasm_browser))]
     dns_resolver: Option<DnsResolver>,
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
 }
 
 impl PkarrPublisherBuilder {
@@ -168,6 +170,8 @@ impl PkarrPublisherBuilder {
             filter: AddrFilter::relay_only(),
             #[cfg(not(wasm_browser))]
             dns_resolver: None,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_tcp_socket_initializer: None,
         }
     }
 
@@ -223,14 +227,21 @@ impl PkarrPublisherBuilder {
     ///
     /// This publisher will be able to publish [pkarr](https://pkarr.org) records for [`SecretKey`].
     pub fn build(self, secret_key: SecretKey, tls_config: rustls::ClientConfig) -> PkarrPublisher {
+        #[cfg(wasm_browser)]
+        let pkarr_client = PkarrRelayClient::new(self.pkarr_relay);
+        #[cfg(not(wasm_browser))]
+        let pkarr_client = PkarrRelayClient::new_with_socket_initializer(
+            self.pkarr_relay,
+            tls_config,
+            self.dns_resolver.unwrap_or_default(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            self.native_tcp_socket_initializer,
+        );
         PkarrPublisher::new(
             secret_key,
-            self.pkarr_relay,
+            pkarr_client,
             self.ttl,
             self.republish_interval,
-            #[cfg(not(wasm_browser))]
-            self.dns_resolver.unwrap_or_default(),
-            tls_config,
             self.filter,
         )
     }
@@ -244,6 +255,10 @@ impl AddressLookupBuilder for PkarrPublisherBuilder {
         #[cfg(not(wasm_browser))]
         if self.dns_resolver.is_none() {
             self.dns_resolver = Some(endpoint.dns_resolver()?.clone());
+        }
+        #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+        {
+            self.native_tcp_socket_initializer = endpoint.native_tcp_socket_initializer();
         }
         let tls_config = endpoint.tls_config().clone();
         Ok(self.build(endpoint.secret_key().clone(), tls_config))
@@ -297,21 +312,13 @@ impl PkarrPublisher {
     /// [`SignedPacket`]s as well as a custom republish interval.
     fn new(
         secret_key: SecretKey,
-        pkarr_relay: Url,
+        pkarr_client: PkarrRelayClient,
         ttl: u32,
         republish_interval: Duration,
-        #[cfg(not(wasm_browser))] dns_resolver: DnsResolver,
-        tls_config: rustls::ClientConfig,
         addr_filter: AddrFilter,
     ) -> Self {
-        debug!("creating pkarr publisher that publishes to {pkarr_relay}");
+        debug!(pkarr_relay = %pkarr_client.pkarr_relay_url, "creating pkarr publisher");
         let endpoint_id = secret_key.public();
-
-        #[cfg(wasm_browser)]
-        let pkarr_client = PkarrRelayClient::new(pkarr_relay);
-
-        #[cfg(not(wasm_browser))]
-        let pkarr_client = PkarrRelayClient::new(pkarr_relay, tls_config, dns_resolver);
 
         let watchable = Watchable::default();
         let service = PublisherService {
@@ -443,6 +450,8 @@ pub struct PkarrResolverBuilder {
     pkarr_relay: Url,
     #[cfg(not(wasm_browser))]
     dns_resolver: Option<DnsResolver>,
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
 }
 
 impl PkarrResolverBuilder {
@@ -459,10 +468,12 @@ impl PkarrResolverBuilder {
         let pkarr_client = PkarrRelayClient::new(self.pkarr_relay);
 
         #[cfg(not(wasm_browser))]
-        let pkarr_client = PkarrRelayClient::new(
+        let pkarr_client = PkarrRelayClient::new_with_socket_initializer(
             self.pkarr_relay,
             tls_config,
             self.dns_resolver.unwrap_or_default(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            self.native_tcp_socket_initializer,
         );
 
         PkarrResolver { pkarr_client }
@@ -477,6 +488,10 @@ impl AddressLookupBuilder for PkarrResolverBuilder {
         #[cfg(not(wasm_browser))]
         if self.dns_resolver.is_none() {
             self.dns_resolver = Some(endpoint.dns_resolver()?.clone());
+        }
+        #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+        {
+            self.native_tcp_socket_initializer = endpoint.native_tcp_socket_initializer();
         }
         let tls_config = endpoint.tls_config().clone();
         Ok(self.build(tls_config))
@@ -509,6 +524,8 @@ impl PkarrResolver {
             pkarr_relay,
             #[cfg(not(wasm_browser))]
             dns_resolver: None,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_tcp_socket_initializer: None,
         }
     }
 
@@ -595,9 +612,30 @@ impl PkarrRelayClient {
         tls_config: rustls::ClientConfig,
         dns_resolver: DnsResolver,
     ) -> Self {
-        let http_client = reqwest_client_builder(tls_config, dns_resolver)
-            .build()
-            .expect("failed to create reqwest client");
+        Self::new_with_socket_initializer(
+            pkarr_relay_url,
+            tls_config,
+            dns_resolver,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            None,
+        )
+    }
+
+    #[cfg(not(wasm_browser))]
+    fn new_with_socket_initializer(
+        pkarr_relay_url: Url,
+        tls_config: rustls::ClientConfig,
+        dns_resolver: DnsResolver,
+        #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+        initialize: Option<iroh_relay::client::NativeTcpSocketInitializer>,
+    ) -> Self {
+        #[allow(unused_mut)]
+        let mut builder = reqwest_client_builder(tls_config, dns_resolver);
+        #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+        if let Some(initialize) = initialize {
+            builder = initialize.configure_http_client(builder);
+        }
+        let http_client = builder.build().expect("failed to create reqwest client");
         Self {
             http_client,
             pkarr_relay_url,
@@ -679,5 +717,156 @@ impl PkarrRelayClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(all(
+    test,
+    unix,
+    with_crypto_provider,
+    feature = "native-tcp-socket-initializer"
+))]
+mod native_socket_policy_tests {
+    use std::{
+        os::fd::AsFd,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use n0_future::StreamExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+    use crate::endpoint::{RelayMode, presets};
+
+    #[tokio::test]
+    async fn endpoint_policy_reaches_pkarr_publish_and_resolve() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url: Url = format!("http://{}/", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .native_relay_tcp_socket_initializer(move |socket| {
+                let stream = std::net::TcpStream::from(socket.as_fd().try_clone_to_owned()?);
+                assert!(
+                    stream.peer_addr().is_err(),
+                    "PKARR socket must be initialized before connect"
+                );
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .bind()
+            .await
+            .unwrap();
+        let id = endpoint.id();
+        let (published, publication) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut payload = Vec::new();
+            let mut published = Some(published);
+            for method in ["PUT", "GET"] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    assert!(header.len() < 8192);
+                    header.push(socket.read_u8().await.unwrap());
+                }
+                let header = String::from_utf8(header).unwrap();
+                assert!(header.starts_with(&format!("{method} /{} ", id.to_z32())));
+                if method == "PUT" {
+                    let length: usize = header
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    assert!(length < 65536);
+                    payload.resize(length, 0);
+                    socket.read_exact(&mut payload).await.unwrap();
+                    SignedPacket::from_relay_payload(&id, &payload).unwrap();
+                    socket.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                    published.take().unwrap().send(()).unwrap();
+                } else {
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len()).as_bytes()).await.unwrap();
+                    socket.write_all(&payload).await.unwrap();
+                }
+            }
+        });
+        let data = EndpointData::new(vec![iroh_base::TransportAddr::Relay(
+            "https://relay.example/".parse().unwrap(),
+        )]);
+        let publisher = PkarrPublisher::builder(url.clone())
+            .into_address_lookup(&endpoint)
+            .unwrap();
+        publisher.publish(&data);
+        tokio::time::timeout(Duration::from_secs(3), publication)
+            .await
+            .unwrap()
+            .unwrap();
+        let resolver = PkarrResolver::builder(url)
+            .into_address_lookup(&endpoint)
+            .unwrap();
+        let mut records = resolver.resolve(id).unwrap();
+        let record = tokio::time::timeout(Duration::from_secs(3), records.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.endpoint_info(), &EndpointInfo::from_parts(id, data));
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "fresh PUT and GET connections must both inherit endpoint policy"
+        );
+        drop(publisher);
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn pkarr_resolution_cannot_bypass_endpoint_policy_refusal() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url: Url = format!("http://{}/", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .native_relay_tcp_socket_initializer(move |_| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "PKARR socket denied",
+                ))
+            })
+            .bind()
+            .await
+            .unwrap();
+        let resolver = PkarrResolver::builder(url)
+            .into_address_lookup(&endpoint)
+            .unwrap();
+        let mut records = resolver.resolve(endpoint.id()).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), records.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "refused policy must prevent server connection"
+        );
+        endpoint.close().await;
     }
 }

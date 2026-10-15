@@ -104,6 +104,9 @@ impl From<netwatch::netmon::State> for IfStateDetails {
 #[cfg(not(wasm_browser))]
 #[derive(Debug, Clone)]
 pub(super) struct SocketState {
+    #[cfg(feature = "native-tcp-socket-initializer")]
+    pub(super) native_tcp_socket_initializer:
+        Option<iroh_relay::client::NativeTcpSocketInitializer>,
     /// QUIC client to do QUIC address Discovery
     pub(super) quic_client: Option<QuicClient>,
     /// The DNS resolver to use for probes that need to resolve DNS records.
@@ -294,6 +297,9 @@ impl Actor {
 
             let dns_resolver = self.socket_state.dns_resolver.clone();
             let proxy_url = self.socket_state.proxy_url.clone();
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            let native_tcp_socket_initializer =
+                self.socket_state.native_tcp_socket_initializer.clone();
             let dm = self.relay_map.clone();
             let token = token.clone();
             #[cfg(not(wasm_browser))]
@@ -312,6 +318,8 @@ impl Actor {
                                     preferred_relay,
                                     tls_config,
                                     proxy_url.as_ref(),
+                                    #[cfg(feature = "native-tcp-socket-initializer")]
+                                    native_tcp_socket_initializer.as_ref(),
                                 ),
                             )
                             .await
@@ -529,6 +537,8 @@ impl Probe {
                     tls_config,
                     #[cfg(not(wasm_browser))]
                     socket_state.proxy_url.as_ref(),
+                    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+                    socket_state.native_tcp_socket_initializer.as_ref(),
                 )
                 .await
                 {
@@ -577,6 +587,9 @@ async fn check_captive_portal(
     preferred_relay: Option<RelayUrl>,
     tls_config: rustls::ClientConfig,
     proxy_url: Option<&Url>,
+    #[cfg(feature = "native-tcp-socket-initializer")] initialize: Option<
+        &iroh_relay::client::NativeTcpSocketInitializer,
+    >,
 ) -> Result<bool, CaptivePortalError> {
     // If we have a preferred relay and we can use it for non-QAD requests, try that;
     // otherwise, pick a random one suitable for non-STUN requests.
@@ -601,6 +614,10 @@ async fn check_captive_portal(
 
     let mut builder = reqwest_client_builder(tls_config, dns_resolver.clone())
         .redirect(reqwest::redirect::Policy::none());
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    if let Some(initialize) = initialize {
+        builder = initialize.configure_http_client(builder);
+    }
     if let Some(proxy_url) = proxy_url {
         let proxy = reqwest::Proxy::all(proxy_url.clone())
             .map_err(|err| e!(CaptivePortalError::CreateReqwestClient, err))?;
@@ -816,6 +833,9 @@ async fn run_https_probe(
     relay: RelayUrl,
     #[cfg(not(wasm_browser))] tls_config: rustls::ClientConfig,
     #[cfg(not(wasm_browser))] proxy_url: Option<&Url>,
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))] initialize: Option<
+        &iroh_relay::client::NativeTcpSocketInitializer,
+    >,
 ) -> Result<HttpsProbeReport, MeasureHttpsLatencyError> {
     trace!("HTTPS probe start");
     let url = relay.join(RELAY_PROBE_PATH)?;
@@ -828,6 +848,10 @@ async fn run_https_probe(
     #[cfg(not(wasm_browser))]
     let mut builder = reqwest_client_builder(tls_config, dns_resolver.clone())
         .redirect(reqwest::redirect::Policy::none());
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    if let Some(initialize) = initialize {
+        builder = initialize.configure_http_client(builder);
+    }
     #[cfg(wasm_browser)]
     let builder = reqwest_client_builder();
 
@@ -894,6 +918,8 @@ mod tests {
                 .client_config(default_provider())
                 .expect("infallible"),
             None,
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            None,
         )
         .await?;
 
@@ -954,6 +980,8 @@ mod tests {
                 .client_config(default_provider())
                 .expect("infallible"),
             Some(&proxy_url),
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            None,
         )
         .await;
         assert!(

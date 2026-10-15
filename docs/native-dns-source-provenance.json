@@ -1,0 +1,60 @@
+{
+  "crate": "n0-dns-resolver",
+  "version": "0.1.0",
+  "upstreamRevision": "16a791ce8cfd6456518970872ba3251b0756112d",
+  "sourceManifestSha256": "49382525f35afec3fe41b652fda04feff2d98fee9679fe50357a7048848e450e",
+  "originalSourcesSha256": {
+    "src/builder.rs": "ea689c0641b05489f8eadfb0320554b793fbb56c771b6c22572cffa0971287f4",
+    "src/config.rs": "5d2f83ca53bcf60fee4b0266543c7383384b516bf4cd1899882f079fbb2c71d6",
+    "src/error.rs": "4f72c71a306e762aedc9e1b6b5c990973fe60b44379dd278ceeaabe493f4ea75",
+    "src/lib.rs": "206016e3a3fd8069d88e79840878c735234bc1422c630679b6b4d5df99f82c13",
+    "src/public_resolvers.rs": "8f6aa7208d87294bc05888c258de9e38acde1452731b62924830ecebeb5df451",
+    "src/records.rs": "2f0c85ea45e2a3ab3f684541143bd5345623c4095b989536edccb0ca6ae0ef5b",
+    "src/resolver/cache.rs": "2d5d603033fdf9b4fb114b775d6bf8b4dd4c043c4be863e1b60275bc62795781",
+    "src/resolver/pool.rs": "93b47078fc5d5cff28c1271493de413374bd1f48b75e2d82253253b443fd5f4f",
+    "src/resolver/query.rs": "221a0f3707b286cd98d5de56668d34f461735b035a52f0a75ae78b301b2c698b",
+    "src/resolver/rtt_map.rs": "43b42a85e936117adb424f2659108ae266d64c22e18bfe992e23fee76eaebe29",
+    "src/resolver/transport.rs": "a2995d9645a833892111ba4be8a79782f0f051e5386b84ec1f00fb85c281f51a",
+    "src/resolver.rs": "d9e010321618a6e096fc6cbfd35aeb3bb9b23a5a321d7ae2f9773f4f39de4b42",
+    "src/system_config/android.rs": "d821197b5fed02ab5dc5dfd2500fd3321594d514c56057fa6131280316fe6813",
+    "src/system_config/apple.rs": "3f8cb2d12e4bca23fb2e972eb900902f89ff726dae8ce31469a50f13e8343566",
+    "src/system_config/hosts.rs": "9a10b42384957be61f34d0f8dc7a36fb5fb40ee6ea642d7bf36ab6dd3c26fded",
+    "src/system_config/unix.rs": "9e596e4d8894af41d22823395418894106c2e4234fcbed018f9d50258b1c6349",
+    "src/system_config/windows.rs": "68bd41bb9c54eaa63ca588bf91b48593c43070f3b341ccc83b53ed5f8b097523",
+    "src/system_config.rs": "96122945c938f461b30d6c29145e91876639be84742aa69aa1ab2d9480c22454",
+    "src/tests/mod.rs": "bd74afac2f8f266579d26d314881c1cb25d410ea93139a17067ccec83274a3cf",
+    "src/tests/resolver.rs": "df4698ee21cf7e3a1da1779afa7c892ec636599e5c329edf9a548792ba38a630"
+  },
+  "status": "Native resolver and Iroh constructor policy source-prepared and qualified with local public DNS/DoT/DoH endpoints; SDK/helper adoption and OS route proof pending.",
+  "modifiedUpstreamSources": [
+    "src/builder.rs",
+    "src/error.rs",
+    "src/lib.rs",
+    "src/resolver/transport.rs",
+    "src/resolver.rs"
+  ],
+  "validation": {
+    "publicProtocolCases": "Two tests cover UDP/TCP/DoT/DoH callback before bind/connect, retained pools/cache, reset, terminal denial.",
+    "legacyTransportCases": "9 passed: framing, anti-spoofing, truncated datagrams, pool stale frames and bounded HTTPS bodies",
+    "irohWrapper": "Public staggered denial 1 passed; no datagram observed",
+    "negativeControls": {
+      "constructorForwardingOmitted": "both public tests fail for intended reasons: successful forbidden response and absent callback",
+      "terminalFallbackOmitted": "denial test fails after an extra TCP callback [Udp,Tcp] instead of [Udp]"
+    },
+    "restored": "2 passed",
+    "relayCompatibility": "Client Sync restored by retaining Sync in native erased stream; refusal error variant appended to preserve existing discriminants. Native all-feature and WASM compile passed. Fresh semver outcome pending.",
+    "clippy": "Default transport set and UDP/TCP-only with native socket policy passed with warnings denied."
+  },
+  "logSha256": {
+    "/tmp/proxy-vpn-dns-policy-final-public-tests.log": "7493edc9cc5023617999af9dd0d557f54705239a87238f41ffb8876e605a03a3",
+    "/tmp/proxy-vpn-dns-policy-omit-builder-tests.log": "d1edb6057888e7e44d8f5ff25edf89658733a7aaae9254d97eb4719f546a5f87",
+    "/tmp/proxy-vpn-dns-policy-omit-terminal-fallback-tests.log": "00895ba171afbaaa3d7dc52632c4c35b2ca05b2dc7966c6c10087029d2f7d96a",
+    "/tmp/proxy-vpn-dns-iroh-staggered-test.log": "25c166760444b555ab5f018bb0d1416ab97013e6616b03df18572ed6b8ac176f",
+    "/tmp/proxy-vpn-dns-policy-legacy-transport-tests.log": "80e5a6e09d68d2f01166a70062a7847733a6fb783568139b99b962e7c403e5d3",
+    "/tmp/proxy-vpn-relay-semver-sync-check.log": "285342ba10bfceb17cc5475836a675e13522bd2b3623b3568003839b88dbed19",
+    "/tmp/proxy-vpn-relay-semver-sync-wasm-check.log": "fdc3cd8e6793df9d11f98d4ea92fe43eb10f1e168a94164669c74dd2758367c7",
+    "/tmp/proxy-vpn-dns-policy-default-clippy.log": "7ffd7709362fae9a0d3302ace803d71c897c4a3defc537d23a3d394393f39305",
+    "/tmp/proxy-vpn-dns-policy-no-default-clippy-v2.log": "f5e3c547b0b13269b2fda87b01566b028e4203aaaa65fc1cd5c321eb435ecfb7"
+  },
+  "windowsUnboundSocketReference": "https://learn.microsoft.com/en-us/windows/win32/api/winsock/nf-winsock-getsockname"
+}

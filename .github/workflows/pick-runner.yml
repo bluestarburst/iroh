@@ -198,6 +198,7 @@ jobs:
     steps:
       - id: p
         env:
+          GITHUB_HOSTED_FORK: ${{ github.repository_owner != inputs.org }}
           MIN_FREE_RUNNERS: ${{ inputs.min_free_runners }}
           MAX_BLACKSMITH_CONCURRENT: ${{ inputs.max_blacksmith_concurrent }}
           CORE_RUNNER: ${{ inputs.core_runner }}
@@ -208,6 +209,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Public forks do not own the upstream self-hosted/Blacksmith fleet.
+          if [[ "$GITHUB_HOSTED_FORK" == "true" ]]; then
+            case "$CORE_RUNNER" in
+              *windows*) FORK_RUNNER='["windows-latest"]' ;;
+              *macOS*|*macos*) FORK_RUNNER='["macos-14"]' ;;
+              *) FORK_RUNNER='["ubuntu-latest"]' ;;
+            esac
+            echo "core=${FORK_RUNNER}" >> "$GITHUB_OUTPUT"
+            for i in $(seq 1 16); do
+              echo "overflow_${i}=${FORK_RUNNER}" >> "$GITHUB_OUTPUT"
+            done
+            echo "idle=0" >> "$GITHUB_OUTPUT"
+            echo "blacksmith_busy=0" >> "$GITHUB_OUTPUT"
+            echo "decision=GitHub-hosted fork" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "core=${CORE_RUNNER}" >> "$GITHUB_OUTPUT"
 
           # One paginated fetch, counted twice. Avoid a second round-trip.

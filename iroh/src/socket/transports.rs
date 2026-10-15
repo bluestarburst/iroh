@@ -33,6 +33,8 @@ use custom::{CustomEndpoint, CustomSender, CustomTransport};
 
 #[cfg(not(wasm_browser))]
 pub(crate) use self::ip::Config as IpConfig;
+#[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+pub(crate) use self::ip::SocketInitializerFailure;
 #[cfg(not(wasm_browser))]
 use self::ip::{IpNetworkChangeSender, IpTransports, IpTransportsSender};
 pub(crate) use self::relay::{
@@ -50,6 +52,8 @@ const MAX_CONSECUTIVE_RECV_ERRORS: usize = 8;
 pub(crate) struct Transports {
     #[cfg(not(wasm_browser))]
     ip: IpTransports,
+    #[cfg(not(wasm_browser))]
+    ip_policy: crate::ip_transport_policy::IpTransportPolicy,
     relay: Vec<RelayTransport>,
     custom: Vec<Box<dyn CustomEndpoint>>,
 
@@ -190,6 +194,8 @@ impl Transports {
         relay_actor_config: RelayActorConfig,
         metrics: &EndpointMetrics,
         shutdown_token: CancellationToken,
+        #[cfg(all(not(wasm_browser), feature = "native-udp-socket-initializer"))]
+        bind_options: Option<&netwatch::BindOptions>,
     ) -> io::Result<Self> {
         #[cfg(not(wasm_browser))]
         let ip_configs = {
@@ -220,7 +226,12 @@ impl Transports {
             ip_configs
         };
         #[cfg(not(wasm_browser))]
-        let ip = IpTransports::bind(ip_configs.into_iter(), metrics)?;
+        let ip = IpTransports::bind(
+            ip_configs.into_iter(),
+            metrics,
+            #[cfg(feature = "native-udp-socket-initializer")]
+            bind_options,
+        )?;
 
         let relay = configs
             .iter()
@@ -243,12 +254,19 @@ impl Transports {
         Ok(Self {
             #[cfg(not(wasm_browser))]
             ip,
+            #[cfg(not(wasm_browser))]
+            ip_policy: Default::default(),
             relay,
             custom,
             poll_recv_counter: Default::default(),
             recv_infos: Default::default(),
             consecutive_total_recv_failures: 0,
         })
+    }
+
+    #[cfg(not(wasm_browser))]
+    pub(crate) fn set_ip_policy(&mut self, policy: crate::ip_transport_policy::IpTransportPolicy) {
+        self.ip_policy = policy;
     }
 
     pub(crate) fn poll_recv(
@@ -268,6 +286,33 @@ impl Transports {
             Poll::Pending => Poll::Pending,
             Poll::Ready(0) => Poll::Ready(Ok(0)),
             Poll::Ready(n) => {
+                #[cfg(not(wasm_browser))]
+                let n = {
+                    let policy = self.ip_policy.read()?;
+                    let mut kept = 0;
+                    for i in 0..n {
+                        let allowed = match self.recv_infos[i].remote() {
+                            Addr::Ip(remote) => {
+                                policy.allows(remote.ip())
+                                    && metas[i].dst_ip.is_none_or(|local| policy.allows(local))
+                            }
+                            _ => true,
+                        };
+                        if allowed {
+                            if i != kept {
+                                bufs.swap(i, kept);
+                                metas.swap(i, kept);
+                                self.recv_infos.swap(i, kept);
+                            }
+                            kept += 1;
+                        }
+                    }
+                    if kept == 0 {
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    kept
+                };
                 sock.process_datagrams(&mut bufs[..n], &mut metas[..n], &self.recv_infos[..n]);
                 Poll::Ready(Ok(n))
             }
@@ -473,6 +518,8 @@ impl Transports {
         TransportsSender {
             #[cfg(not(wasm_browser))]
             ip,
+            #[cfg(not(wasm_browser))]
+            ip_policy: self.ip_policy.clone(),
             relay,
             custom,
             max_transmit_segments,
@@ -955,6 +1002,8 @@ impl fmt::Display for FourTuple {
 pub(crate) struct TransportsSender {
     #[cfg(not(wasm_browser))]
     ip: IpTransportsSender,
+    #[cfg(not(wasm_browser))]
+    ip_policy: crate::ip_transport_policy::IpTransportPolicy,
     relay: Vec<RelaySender>,
     custom: Vec<Arc<dyn CustomSender>>,
     max_transmit_segments: NonZeroUsize,
@@ -968,6 +1017,26 @@ impl TransportsSender {
         network_path: &FourTuple,
         transmit: &Transmit<'_>,
     ) -> Poll<io::Result<()>> {
+        #[cfg(not(wasm_browser))]
+        let policy = self.ip_policy.clone();
+        #[cfg(not(wasm_browser))]
+        let _policy_guard = match network_path {
+            FourTuple::Ip { remote, local } => match policy.read() {
+                Ok(guard)
+                    if guard.allows(remote.ip()) && local.is_none_or(|ip| guard.allows(ip)) =>
+                {
+                    Some(guard)
+                }
+                _ => {
+                    // Match the existing no-eligible-transport semantics. A
+                    // policy change must not terminate the logical QUIC peer;
+                    // the current path machinery observes loss and falls back.
+                    trace!(%network_path, "IP transport excluded");
+                    return Poll::Ready(Ok(()));
+                }
+            },
+            _ => None,
+        };
         match network_path {
             #[cfg(wasm_browser)]
             FourTuple::Ip { .. } => {
@@ -1357,7 +1426,15 @@ mod tests {
         let metrics = EndpointMetrics::default();
         Transports {
             #[cfg(not(wasm_browser))]
-            ip: ip::IpTransports::bind(std::iter::empty(), &metrics).unwrap(),
+            ip: ip::IpTransports::bind(
+                std::iter::empty(),
+                &metrics,
+                #[cfg(feature = "native-udp-socket-initializer")]
+                None,
+            )
+            .unwrap(),
+            #[cfg(not(wasm_browser))]
+            ip_policy: Default::default(),
             relay: Vec::new(),
             custom,
             poll_recv_counter: 0,
@@ -1456,5 +1533,152 @@ mod tests {
         ) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
+    }
+
+    #[cfg(not(wasm_browser))]
+    #[tokio::test]
+    async fn ip_exclusions_fence_existing_sender_clones_at_kernel_boundary() {
+        use std::net::Ipv4Addr;
+
+        use tokio::{
+            net::UdpSocket,
+            time::{Duration, timeout},
+        };
+
+        use crate::ip_transport_policy::IpTransportPolicy;
+        let metrics = EndpointMetrics::default();
+        let TransportConfig::Ip { config, .. } = TransportConfig::default_ipv4() else {
+            unreachable!()
+        };
+        let mut transports = custom_only_transports(Vec::new());
+        transports.ip = IpTransports::bind(
+            [config].into_iter(),
+            &metrics,
+            #[cfg(feature = "native-udp-socket-initializer")]
+            None,
+        )
+        .unwrap();
+        let policy = IpTransportPolicy::default();
+        transports.set_ip_policy(policy.clone());
+        let mut sender = transports.create_sender();
+        let mut retained = sender.clone();
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let destination = FourTuple::Ip {
+            remote: receiver.local_addr().unwrap(),
+            local: None,
+        };
+        let transmit = Transmit {
+            contents: b"physical-underlay",
+            ecn: None,
+            segment_size: None,
+        };
+        let mut bytes = [0; 64];
+        std::future::poll_fn(|cx| Pin::new(&mut sender).poll_send(cx, &destination, &transmit))
+            .await
+            .unwrap();
+        let (n, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &bytes[..n],
+            transmit.contents,
+            "positive control must reach the real kernel socket"
+        );
+        policy
+            .replace(vec!["127.0.0.0/8".parse().unwrap()])
+            .unwrap();
+        std::future::poll_fn(|cx| Pin::new(&mut retained).poll_send(cx, &destination, &transmit))
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(100), receiver.recv_from(&mut bytes))
+                .await
+                .is_err(),
+            "a sender retained before the policy commit must not emit excluded UDP"
+        );
+        policy.replace(Vec::new()).unwrap();
+        std::future::poll_fn(|cx| Pin::new(&mut retained).poll_send(cx, &destination, &transmit))
+            .await
+            .unwrap();
+        let (n, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &bytes[..n],
+            transmit.contents,
+            "clearing the exclusion must restore this same sender"
+        );
+    }
+
+    /// Real TUN route proof, orchestrated with Proxy's existing root helper.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires the explicit isolated Linux underlay helper gate"]
+    async fn ip_exclusions_fence_real_tun_capture() {
+        use std::{io::Write, path::PathBuf};
+
+        use tokio::time::{Duration, timeout};
+
+        use crate::ip_transport_policy::IpTransportPolicy;
+        let fixture = PathBuf::from(
+            std::env::var("PROXY_VPN_UNDERLAY_GATE_DIR")
+                .expect("run through the isolated Linux underlay gate"),
+        );
+        let metrics = EndpointMetrics::default();
+        let TransportConfig::Ip { config, .. } = TransportConfig::default_ipv4() else {
+            unreachable!()
+        };
+        let mut transports = custom_only_transports(Vec::new());
+        transports.ip = IpTransports::bind(
+            [config].into_iter(),
+            &metrics,
+            #[cfg(feature = "native-udp-socket-initializer")]
+            None,
+        )
+        .unwrap();
+        let policy = IpTransportPolicy::default();
+        transports.set_ip_policy(policy.clone());
+        let mut retained = transports.create_sender().clone();
+        let destination = FourTuple::Ip {
+            remote: "10.203.94.2:33444".parse().unwrap(),
+            local: None,
+        };
+        for (phase, payload, networks) in [
+            ("udp-positive", "underlay-positive", Vec::new()),
+            (
+                "udp-denied",
+                "underlay-denied",
+                vec!["10.203.94.0/24".parse().unwrap()],
+            ),
+            ("udp-restored", "underlay-restored", Vec::new()),
+        ] {
+            policy.replace(networks).unwrap();
+            println!("UNDERLAY: {phase}");
+            std::io::stdout().flush().unwrap();
+            let transmit = Transmit {
+                contents: payload.as_bytes(),
+                ecn: None,
+                segment_size: None,
+            };
+            std::future::poll_fn(|cx| {
+                Pin::new(&mut retained).poll_send(cx, &destination, &transmit)
+            })
+            .await
+            .unwrap();
+            println!("UNDERLAY: {phase}-sent");
+            std::io::stdout().flush().unwrap();
+            // The external fixture acknowledges only an independently observed
+            // TUN payload, or an observed quiet interval for the denied payload.
+            timeout(Duration::from_secs(5), async {
+                while !fixture.join(phase).exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("physical TUN observation did not acknowledge this phase");
+        }
+        println!("PASS: real TUN captured permitted UDP and rejected retained-sender excluded UDP");
     }
 }

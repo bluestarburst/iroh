@@ -49,7 +49,7 @@ impl AsyncWrite for QuicBidiIo {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match Pin::new(&mut self.send).poll_flush(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -57,7 +57,7 @@ impl AsyncWrite for QuicBidiIo {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match Pin::new(&mut self.send).poll_shutdown(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -107,9 +107,7 @@ impl Sink<Bytes> for QuicBytesFramed {
     type Error = AnyError;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.io)
-            .poll_ready(cx)
-            .map_err(AnyError::from_std)
+        Sink::<Bytes>::poll_ready(Pin::new(&mut self.io), cx).map_err(AnyError::from_std)
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
@@ -119,14 +117,10 @@ impl Sink<Bytes> for QuicBytesFramed {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.io)
-            .poll_flush(cx)
-            .map_err(AnyError::from_std)
+        Sink::<Bytes>::poll_flush(Pin::new(&mut self.io), cx).map_err(AnyError::from_std)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.io)
-            .poll_close(cx)
-            .map_err(AnyError::from_std)
+        Sink::<Bytes>::poll_close(Pin::new(&mut self.io), cx).map_err(AnyError::from_std)
     }
 }

@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-13",
+  "failedRun": "https://github.com/bluestarburst/iroh/actions/runs/38438394259",
+  "advisory": "https://rustsec.org/advisories/RUSTSEC-2026-0285.html",
+  "sourceSha256": {
+    "Cargo.toml": "9e0edad15070fd83de407b23ba4224f1a4ee2e6d1a26c64cf236fa572a772b39",
+    "Cargo.lock": "a5b123fcc4b69e57e4d7b79727f1dd9be37a192443b379eb4e5db31fecfdd01c",
+    "deny.toml": "7227e77e09926543743f651f8e5223251d72b2ae2b8facc5669a7a129df5ae34",
+    ".github/workflows/ci.yml": "8fd3fbcb711c805dbfa87f99fa1fdd4db200a3b15be0ebeabb0e46c5568954a3",
+    "iroh/Cargo.toml": "18130085b30c96364e449bb42d5889c888116aa5f76f8dfb7d28c2cd70637e22",
+    "iroh-dns/Cargo.toml": "9c3bfed57d6e1450b36928c6617e81440d46af28b3d6508c0a6a5181e5da24c0",
+    "iroh-relay/Cargo.toml": "309ce1b0189c24b5db578ddf3d36da6dc1df541d3eb6832eabb846bc5f4beb7e",
+    "iroh-dns-server/Cargo.toml": "9d8be52b59881917e0a39fd6d9a1b64d8fd070a926eb8b143e971835e868fb59"
+  },
+  "dependencyVersions": {
+    "aws-lc-rs": "1.18.2",
+    "aws-lc-sys": "0.46.0",
+    "pkg-config": "0.3.34",
+    "rustls": "0.23.45",
+    "rustls-webpki": "0.103.15"
+  },
+  "localChecks": [
+    "repository formatting flags passed",
+    "git diff --check passed",
+    "locked offline full native graph resolution passed"
+  ],
+  "runtimeAfterUpgrade": "pending remote CI; prior runtime receipts are not current for this TLS cohort",
+  "vpnEnabled": false
+}

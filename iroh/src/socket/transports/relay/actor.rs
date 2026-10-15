@@ -209,6 +209,8 @@ struct RelayConnectionOptions {
     secret_key: SecretKey,
     #[cfg(not(wasm_browser))]
     dns_resolver: DnsResolver,
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    native_relay_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
     proxy_url: Option<Url>,
     prefer_ipv6: Arc<AtomicBool>,
     tls_config: rustls::ClientConfig,
@@ -300,6 +302,8 @@ impl ActiveRelayActor {
             secret_key,
             #[cfg(not(wasm_browser))]
             dns_resolver,
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer,
             proxy_url,
             prefer_ipv6,
             tls_config,
@@ -316,6 +320,10 @@ impl ActiveRelayActor {
         )
         .tls_client_config(tls_config)
         .address_family_selector(move || prefer_ipv6.load(Ordering::Relaxed));
+        #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+        if let Some(initialize) = native_relay_tcp_socket_initializer {
+            builder = builder.native_tcp_socket_initializer(initialize);
+        }
         if let Some(proxy_url) = proxy_url {
             builder = builder.proxy_url(proxy_url);
         }
@@ -947,6 +955,9 @@ pub(crate) struct Config {
     pub secret_key: SecretKey,
     #[cfg(not(wasm_browser))]
     pub dns_resolver: DnsResolver,
+    /// Optional host socket policy for every WebSocket relay/proxy dial.
+    #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+    pub native_relay_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
     /// Proxy
     pub proxy_url: Option<Url>,
     /// If the last net_report report, reports IPv6 to be available.
@@ -1362,6 +1373,11 @@ impl RelayActor {
             secret_key: self.config.secret_key.clone(),
             #[cfg(not(wasm_browser))]
             dns_resolver: self.config.dns_resolver.clone(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: self
+                .config
+                .native_relay_tcp_socket_initializer
+                .clone(),
             proxy_url: self.config.proxy_url.clone(),
             prefer_ipv6: self.config.ipv6_reported.clone(),
             tls_config: self.config.tls_config.clone(),
@@ -1552,9 +1568,13 @@ mod tests {
     async fn close_all_active_relays_survives_a_cancelled_task() {
         let (relay_datagram_recv_queue, _recv_rx) = mpsc::channel(1);
         let config = Config {
+            #[cfg(not(wasm_browser))]
+            relay_transport_policy: Default::default(),
             my_relay: Default::default(),
             secret_key: SecretKey::from_bytes(&[0u8; 32]),
             dns_resolver: DnsResolver::new(),
+            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            native_relay_tcp_socket_initializer: None,
             proxy_url: None,
             ipv6_reported: Arc::new(AtomicBool::new(false)),
             tls_config: CaTlsConfig::insecure_skip_verify()
@@ -1598,6 +1618,8 @@ mod tests {
             connection_opts: RelayConnectionOptions {
                 secret_key,
                 dns_resolver: DnsResolver::new(),
+                #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+                native_relay_tcp_socket_initializer: None,
                 proxy_url: None,
                 prefer_ipv6: Arc::new(AtomicBool::new(true)),
                 tls_config: CaTlsConfig::insecure_skip_verify()
@@ -1964,12 +1986,16 @@ mod tests {
             connection_opts: RelayConnectionOptions {
                 secret_key,
                 dns_resolver: DnsResolver::new(),
+                #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+                native_relay_tcp_socket_initializer: None,
                 proxy_url: None,
                 prefer_ipv6: Arc::new(AtomicBool::new(true)),
                 tls_config: CaTlsConfig::insecure_skip_verify()
                     .client_config(default_provider())
                     .expect("infallible"),
                 auth_token: None,
+                #[cfg(not(wasm_browser))]
+                transport_policy: Default::default(),
             },
             stop_token: CancellationToken::new(),
             metrics: Default::default(),

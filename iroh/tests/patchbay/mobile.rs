@@ -82,7 +82,7 @@ async fn mobile_ipv6_phone_to_ipv4_laptop_uses_stable_relay() -> Result {
         .iface(
             "wwan0",
             IfaceConfig::routed(carrier.id())
-                .condition(LinkCondition::Mobile4G, LinkDirection::Both),
+                .condition(LinkCondition::mobile_4g(), LinkDirection::Both),
         )
         .build()
         .await?;
@@ -90,7 +90,7 @@ async fn mobile_ipv6_phone_to_ipv4_laptop_uses_stable_relay() -> Result {
         .add_device("laptop")
         .iface(
             "wlan0",
-            IfaceConfig::routed(wifi.id()).condition(LinkCondition::Wifi, LinkDirection::Both),
+            IfaceConfig::routed(wifi.id()).condition(LinkCondition::wifi(), LinkDirection::Both),
         )
         .build()
         .await?;
@@ -134,7 +134,7 @@ async fn mobile_ipv4_phone_to_ipv6_laptop_uses_stable_relay() -> Result {
         .iface(
             "wwan0",
             IfaceConfig::routed(carrier.id())
-                .condition(LinkCondition::Mobile4G, LinkDirection::Both),
+                .condition(LinkCondition::mobile_4g(), LinkDirection::Both),
         )
         .build()
         .await?;
@@ -182,7 +182,7 @@ async fn mobile_ipv6_phone_to_ipv6_laptop_promotes_direct() -> Result {
         .iface(
             "wwan0",
             IfaceConfig::routed(carrier.id())
-                .condition(LinkCondition::Mobile4G, LinkDirection::Both),
+                .condition(LinkCondition::mobile_4g(), LinkDirection::Both),
         )
         .build()
         .await?;
@@ -239,7 +239,7 @@ async fn mobile_wifi_ipv4_to_cellular_ipv6_handoff_keeps_connection() -> Result 
         .add_device("phone")
         .iface(
             "en0",
-            IfaceConfig::routed(wifi.id()).condition(LinkCondition::Wifi, LinkDirection::Both),
+            IfaceConfig::routed(wifi.id()).condition(LinkCondition::wifi(), LinkDirection::Both),
         )
         .build()
         .await?;
@@ -375,7 +375,7 @@ async fn mobile_ipv6_low_mtu_lossy_link_carries_large_payload() -> Result {
         .iface(
             "wwan0",
             IfaceConfig::routed(carrier.id())
-                .condition(LinkCondition::Mobile3G, LinkDirection::Both),
+                .condition(LinkCondition::mobile_3g(), LinkDirection::Both),
         )
         .build()
         .await?;
@@ -429,7 +429,7 @@ async fn mobile_udp_blocked_network_uses_websocket_relay() -> Result {
         .iface(
             "wwan0",
             IfaceConfig::routed(restricted.id())
-                .condition(LinkCondition::Mobile4G, LinkDirection::Both),
+                .condition(LinkCondition::mobile_4g(), LinkDirection::Both),
         )
         .build()
         .await?;

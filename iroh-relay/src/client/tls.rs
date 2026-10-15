@@ -30,6 +30,8 @@ use crate::defaults::timeouts::*;
 
 #[derive(Debug, Clone)]
 pub(super) struct MaybeTlsStreamBuilder {
+    #[cfg(feature = "native-tcp-socket-initializer")]
+    native_tcp_socket_initializer: Option<NativeTcpSocketInitializer>,
     url: Url,
     dns_resolver: DnsResolver,
     proxy_url: Option<Url>,
@@ -44,6 +46,8 @@ impl MaybeTlsStreamBuilder {
         tls_config: rustls::ClientConfig,
     ) -> Self {
         Self {
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            native_tcp_socket_initializer: None,
             url,
             dns_resolver,
             proxy_url: None,
@@ -54,6 +58,15 @@ impl MaybeTlsStreamBuilder {
 
     pub(super) fn proxy_url(mut self, proxy_url: Option<Url>) -> Self {
         self.proxy_url = proxy_url;
+        self
+    }
+
+    #[cfg(feature = "native-tcp-socket-initializer")]
+    pub(super) fn native_tcp_socket_initializer(
+        mut self,
+        initialize: Option<NativeTcpSocketInitializer>,
+    ) -> Self {
+        self.native_tcp_socket_initializer = initialize;
         self
     }
 
@@ -118,8 +131,14 @@ impl MaybeTlsStreamBuilder {
             let stream = self.dial_url_proxy(proxy.clone(), tls_connector).await?;
             Ok(ProxyStream::Proxied(stream))
         } else {
-            let stream =
-                dial_happy_eyeballs(&self.dns_resolver, &self.url, self.prefer_ipv6).await?;
+            let stream = dial_happy_eyeballs(
+                &self.dns_resolver,
+                &self.url,
+                self.prefer_ipv6,
+                #[cfg(feature = "native-tcp-socket-initializer")]
+                self.native_tcp_socket_initializer.as_ref(),
+            )
+            .await?;
             Ok(ProxyStream::Raw(stream))
         }
     }
@@ -132,12 +151,18 @@ impl MaybeTlsStreamBuilder {
     {
         debug!(%self.url, %proxy_url, "dial url via proxy");
 
-        let tcp_stream = dial_happy_eyeballs(&self.dns_resolver, &proxy_url, self.prefer_ipv6)
-            .await
-            .map_err(|err| match err {
-                DialError::InvalidTargetPort { meta } => DialError::ProxyInvalidTargetPort { meta },
-                err => err,
-            })?;
+        let tcp_stream = dial_happy_eyeballs(
+            &self.dns_resolver,
+            &proxy_url,
+            self.prefer_ipv6,
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            self.native_tcp_socket_initializer.as_ref(),
+        )
+        .await
+        .map_err(|err| match err {
+            DialError::InvalidTargetPort { meta } => DialError::ProxyInvalidTargetPort { meta },
+            err => err,
+        })?;
 
         // Setup TLS if necessary
         let io = if proxy_url.scheme() == "http" {
@@ -247,6 +272,9 @@ async fn dial_happy_eyeballs(
     dns_resolver: &DnsResolver,
     url: &Url,
     prefer_ipv6: bool,
+    #[cfg(feature = "native-tcp-socket-initializer")] initialize: Option<
+        &NativeTcpSocketInitializer,
+    >,
 ) -> Result<TcpStream, DialError> {
     let port = url_port(url).ok_or_else(|| e!(DialError::InvalidTargetPort))?;
 
@@ -281,14 +309,23 @@ async fn dial_happy_eyeballs(
             && let Some(ip) = pop_family(&mut queue, &mut next_prefer_v6)
         {
             let addr = SocketAddr::new(ip, port);
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            let initialize = initialize.cloned();
             dials.push(
                 async move {
                     trace!("connecting TCP stream");
-                    let stream = time::timeout(DIAL_ENDPOINT_TIMEOUT, TcpStream::connect(addr))
-                        .await
-                        .map_err(DialError::from)
-                        .and_then(|res| res.map_err(DialError::from))
-                        .inspect_err(|err| debug!("failed to connect: {err:#}"))?;
+                    let stream = time::timeout(
+                        DIAL_ENDPOINT_TIMEOUT,
+                        connect_tcp(
+                            addr,
+                            #[cfg(feature = "native-tcp-socket-initializer")]
+                            initialize.as_ref(),
+                        ),
+                    )
+                    .await
+                    .map_err(DialError::from)
+                    .and_then(|res| res)
+                    .inspect_err(|err| debug!("failed to connect: {err:#}"))?;
                     trace!("TCP stream connected");
                     stream.set_nodelay(true)?;
                     Ok(stream)
@@ -309,6 +346,8 @@ async fn dial_happy_eyeballs(
             Some(res) = dials.next(), if !dials.is_empty() => match res {
                 Ok(stream) => return Ok(stream),
                 Err(err) => {
+                    #[cfg(feature = "native-tcp-socket-initializer")]
+                    if matches!(&err, DialError::SocketInitialization { .. }) { return Err(err); }
                     last_err = Some(err);
                     if dials.is_empty() {
                         // Fail fast: start the next attempt now rather than waiting it out.
@@ -348,6 +387,30 @@ async fn dial_happy_eyeballs(
             () = &mut next_dial_delayed_until, if next_dial_delayed_until.is_some() => {},
         }
     }
+}
+
+async fn connect_tcp(
+    address: SocketAddr,
+    #[cfg(feature = "native-tcp-socket-initializer")] initialize: Option<
+        &NativeTcpSocketInitializer,
+    >,
+) -> Result<TcpStream, DialError> {
+    #[cfg(feature = "native-tcp-socket-initializer")]
+    if let Some(initialize) = initialize {
+        let socket = if address.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()?
+        } else {
+            tokio::net::TcpSocket::new_v6()?
+        };
+        initialize.initialize(&socket, address).map_err(|error| {
+            e!(
+                DialError::SocketInitialization,
+                SocketInitializationError(error)
+            )
+        })?;
+        return socket.connect(address).await.map_err(DialError::from);
+    }
+    TcpStream::connect(address).await.map_err(DialError::from)
 }
 
 /// Removes the next address to attempt, preferring `*next_is_v6`'s family and
@@ -407,9 +470,15 @@ mod tests {
 
         let addrs = (1..5).map(dead_v4).chain([Ipv4Addr::LOCALHOST]).collect();
         let resolver = static_resolver(addrs, vec![]);
-        let stream = dial_happy_eyeballs(&resolver, &relay_url(port), false)
-            .await
-            .expect("should skip the invalid addrs and still connect");
+        let stream = dial_happy_eyeballs(
+            &resolver,
+            &relay_url(port),
+            false,
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            None,
+        )
+        .await
+        .expect("should skip the invalid addrs and still connect");
         assert_eq!(stream.peer_addr().unwrap().ip(), Ipv4Addr::LOCALHOST);
     }
 
@@ -420,18 +489,30 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let resolver = static_resolver(vec![Ipv4Addr::LOCALHOST], vec![dead_v6(1), dead_v6(2)]);
 
-        let stream = dial_happy_eyeballs(&resolver, &relay_url(port), true)
-            .await
-            .expect("falls back to IPv4");
+        let stream = dial_happy_eyeballs(
+            &resolver,
+            &relay_url(port),
+            true,
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            None,
+        )
+        .await
+        .expect("falls back to IPv4");
         assert!(stream.peer_addr().unwrap().is_ipv4());
     }
 
     #[tokio::test]
     async fn errors_when_all_addresses_unreachable() {
         let resolver = static_resolver(vec![dead_v4(1), dead_v4(2)], vec![dead_v6(1)]);
-        let err = dial_happy_eyeballs(&resolver, &relay_url(80), true)
-            .await
-            .expect_err("nothing reachable");
+        let err = dial_happy_eyeballs(
+            &resolver,
+            &relay_url(80),
+            true,
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            None,
+        )
+        .await
+        .expect_err("nothing reachable");
         dbg!(&err);
         assert!(matches!(
             err,
@@ -442,9 +523,19 @@ mod tests {
     #[tokio::test]
     async fn errors_when_nothing_resolves() {
         let resolver = static_resolver(vec![], vec![]);
-        let err = dial_happy_eyeballs(&resolver, &relay_url(80), false)
-            .await
-            .expect_err("no addresses to dial");
+        let err = dial_happy_eyeballs(
+            &resolver,
+            &relay_url(80),
+            false,
+            #[cfg(feature = "native-tcp-socket-initializer")]
+            None,
+        )
+        .await
+        .expect_err("no addresses to dial");
         assert!(matches!(err, DialError::Dns { .. }));
     }
 }
+
+#[cfg(all(test, feature = "native-tcp-socket-initializer", unix))]
+#[path = "tls/socket_initializer_tests.rs"]
+mod socket_initializer_tests;

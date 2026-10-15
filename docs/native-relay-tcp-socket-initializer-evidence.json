@@ -1,0 +1,68 @@
+{
+  "date": "2026-10-13",
+  "baseCommit": "4e22baec434b6c715dbfa7e30c25ce034880cfdf",
+  "scope": "partial constructor-only native relay/proxy TCP; no VPN activation or publication",
+  "features": [
+    "unstable-custom-transports",
+    "native-tcp-socket-initializer",
+    "native-udp-socket-initializer"
+  ],
+  "sourceSha256": {
+    "iroh-relay/Cargo.toml": "803f266d7390be460a9f942933d75397d3c31e0c86ae5768c3ac2d8543601b8b",
+    "iroh-relay/src/client.rs": "e02de843fe1c0e183dd0e4f0bc8e293ce1b16281d0a4f4477e625fff98d0af7f",
+    "iroh-relay/src/client/socket_init.rs": "89f7fd7d959f208f629457f56302d60646974d6fe8595d687830ed6ae536532a",
+    "iroh-relay/src/client/tls.rs": "e18c8218cda388c0dface7507e0b3b35cfb877349af058a495d3f097833bccc1",
+    "iroh-relay/src/client/tls/socket_initializer_tests.rs": "f83f82ae1f57a2ecb575c483c8d3672d841b9fb77f3ad881fec6063374ee7081",
+    "iroh/Cargo.toml": "2902c30aa4617964014f33acaedd14a6317b4ebbf39f70a38aa13b12398ec70a",
+    "iroh/src/endpoint.rs": "1818e6dc8cc234d22ba2a6060fd99bb06601c7c05eb0e044f8c494022fe407e0",
+    "iroh/src/socket.rs": "bc9d9635dfc65c25f81ba4d26f92e121a9b8d7992e710f005aed198683e1c633",
+    "iroh/src/socket/transports/relay.rs": "b5e8af6720d6a3d8fd196f21644bc76e72dde86e2b1f1e2ac718a55ec2b40dc3",
+    "iroh/src/socket/transports/relay/actor.rs": "3d712a49d518014ebad5699bbec900ba58cb45469faac65cbeb37ebe6ba64c35"
+  },
+  "logSha256": {
+    "/tmp/proxy-vpn-relay-tcp-mac-suite-v1.log": "c4c66ebf3c9386520b6d3cd48de11429c6f53b9ff74e55b7a55a345dd8ad9a51",
+    "/tmp/proxy-vpn-relay-tcp-mac-relay-default-v1.log": "6fbcb0eb6e52945475c5bcd1fb7e48d70196da9bae829138340b2be388c846d2",
+    "/tmp/proxy-vpn-relay-tcp-mac-relay-enabled-v1.log": "36d7e9770dfdeee186fb9a09f87c3226b622c4da6cb316fc8157275218f89eca",
+    "/tmp/proxy-vpn-relay-tcp-mac-clippy-v1.log": "fb09dfdf81ce78690901b103ac8e7d4264ad2c24f29844bb8d97cef9d30419c2",
+    "/tmp/proxy-vpn-relay-tcp-mac-wasm-v2.log": "1eca1422abdf85d8cbb5fdac4a78f469e9452942207f29190009914209babc76",
+    "/tmp/proxy-vpn-relay-tcp-linux-suite-v3.log": "9d9838b8d42483f1277820e31871bd9c423e0f2a53ac1ecfde56d23c3bf4d0a0",
+    "/tmp/proxy-vpn-relay-tcp-fallback-mutant.log": "edc8fe5b46540d82e51d5a7c57cdd1b0e72fac48d315fd317748874294c88427",
+    "/tmp/proxy-vpn-relay-tcp-fallback-restored.log": "340850eaf571120eb8631c555d4abe2f4a873e40fdac605e5d550d84dd069c29",
+    "/tmp/proxy-vpn-relay-tcp-actor-mutant.log": "f51b55104f4a8e7c69445873ef54ad1717615e6ec675b8c4e270d4c3cf2bf902",
+    "/tmp/proxy-vpn-relay-tcp-actor-restored.log": "d6f7c73dc6959f68ec3f464c85cd56b0f4ce2e5cb2ae40797dc855939939135f"
+  },
+  "results": {
+    "macIroh": {
+      "passed": 128,
+      "ignored": 1
+    },
+    "linuxIroh": {
+      "passed": 129,
+      "ignored": 3
+    },
+    "relayLibraryEachPlatform": {
+      "defaultPassed": 7,
+      "featurePassed": 9,
+      "doctestsEachLane": 4
+    },
+    "nativeClippyWarningsDenied": [
+      "mac",
+      "linux"
+    ],
+    "wasm": "passed; existing relay unused import warning",
+    "negativeControls": [
+      "terminal refusal bypass caught; restored pass",
+      "endpoint-to-relay-actor policy forwarding omission caught; restored pass"
+    ]
+  },
+  "linuxImage": "sha256:4d51f5ff1a09d82bdb68f82e59ae3ba621848bd9ac61ec3f250b986d04d888c5",
+  "linuxQualificationNetwork": "bridge; initial full-suite network-none attempt unsuitable and stopped",
+  "remaining": [
+    "SDK constructor adoption and prebound endpoint refusal",
+    "authenticated Proxy helper to SDK relay TCP composition",
+    "DNS/QUIC relay/portmapper/gateway/custom socket coverage",
+    "Windows runtime",
+    "independent devices",
+    "signed source-current SDK artifacts and release matrix"
+  ]
+}
