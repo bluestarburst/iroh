@@ -441,6 +441,7 @@ impl RemoteStateActor {
                 }
                 tx.send(retired).ok();
             }
+            RemoteStateMessage::ReselectPath => self.select_path(),
             RemoteStateMessage::NetworkChange { is_major } => {
                 self.handle_msg_network_change(is_major);
             }
@@ -1358,6 +1359,9 @@ pub(crate) enum RemoteStateMessage {
         reason: Vec<u8>,
         tx: oneshot::Sender<usize>,
     },
+    /// Re-evaluate the configured path policy for existing connections only.
+    /// This does not resolve addresses, dial or start hole punching.
+    ReselectPath,
     /// The network status has changed in some way
     NetworkChange { is_major: bool },
 }

@@ -1791,6 +1791,14 @@ impl Endpoint {
         &self.inner.metrics
     }
 
+    /// Request a fresh selection after an application changes its configured
+    /// path policy. Uses the existing remote actor and existing open paths;
+    /// never creates a connection or starts discovery. Returns false when the
+    /// endpoint/actor is closed or the bounded actor mailbox is full.
+    pub fn request_path_reselection(&self, endpoint_id: EndpointId) -> bool {
+        !self.is_closed() && self.inner.request_path_reselection(endpoint_id)
+    }
+
     /// Returns addressing information about a recently used remote endpoint.
     ///
     /// The returned [`RemoteInfo`] contains a list of all transport addresses for the remote

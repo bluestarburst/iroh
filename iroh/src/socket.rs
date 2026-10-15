@@ -452,6 +452,11 @@ impl Socket {
             .filter_map(|addr| addr.into_socket_addr())
     }
 
+    pub(crate) fn request_path_reselection(&self, endpoint_id: EndpointId) -> bool {
+        self.try_send_remote_state_msg(endpoint_id, RemoteStateMessage::ReselectPath)
+            .is_ok()
+    }
+
     /// Tries to send a [`RemoteStateMessage`] to the `RemoteStateActor` for given [`EndpointId`].
     ///
     /// Returns an error if there currently is no remote state actor running for this, or when it
