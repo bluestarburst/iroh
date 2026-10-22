@@ -2,3 +2,6 @@
 /logs
 iroh.config.toml
 /.patchbay
+
+# Standalone vendored dependency test locks are generated, not source.
+/vendor/noq-proto/Cargo.lock

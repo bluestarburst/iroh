@@ -2,7 +2,7 @@
 
 ### Every PR must link to an issue with prior human discussion
 
-  Before opening a PR, open or find an issue and discuss the proposed change with a maintainer. When there is reasonable consensus between humans on how to implement the feature or solve the bug, then a PR is welcome. 
+  Before opening a PR, open or find an issue and discuss the proposed change with a maintainer. When there is reasonable consensus between humans on how to implement the feature or solve the bug, then a PR is welcome.
 
   You will know that reasonable consensus was reached when the label `ready-for-pr` is added to the issue.
 

@@ -60,7 +60,7 @@ Here is the general workflow you should follow to contribute to `iroh`:
 
      - When possible, please document relevant pieces of code following the [rust documentation conventions][docconventions]. For more information on how the rust documentation system works check the [rustdoc documentation][rustdoc].
      - Comment your code. It will be useful for your reviewer and future contributors.
-     - Using AI when coding your PR is allowed, but please refer to our [AI Policy][AIPolicy]. We reserve the right to close any PRs where we feel that the author has abdicated their responsibility to write a coherent, focused PR to AI. 
+     - Using AI when coding your PR is allowed, but please refer to our [AI Policy][AIPolicy]. We reserve the right to close any PRs where we feel that the author has abdicated their responsibility to write a coherent, focused PR to AI.
 
    - **Pull request titles**
 
