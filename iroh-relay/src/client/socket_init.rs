@@ -71,7 +71,11 @@ impl NativeTcpSocketInitializer {
         })
     }
 
-    pub(super) fn initialize(&self, socket: &tokio::net::TcpSocket, peer: std::net::SocketAddr) -> io::Result<()> {
+    pub(super) fn initialize(
+        &self,
+        socket: &tokio::net::TcpSocket,
+        peer: std::net::SocketAddr,
+    ) -> io::Result<()> {
         (self.0)(NativeTcpSocketRef(NativeTcpSocketKind::Relay(socket, peer)))
     }
 }

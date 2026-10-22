@@ -156,6 +156,8 @@ pub struct PkarrPublisherBuilder {
     filter: AddrFilter,
     #[cfg(not(wasm_browser))]
     dns_resolver: Option<DnsResolver>,
+    #[cfg(not(wasm_browser))]
+    proxy_url: Option<Url>,
     #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
     native_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
 }
@@ -170,6 +172,8 @@ impl PkarrPublisherBuilder {
             filter: AddrFilter::relay_only(),
             #[cfg(not(wasm_browser))]
             dns_resolver: None,
+            #[cfg(not(wasm_browser))]
+            proxy_url: None,
             #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
             native_tcp_socket_initializer: None,
         }
@@ -234,6 +238,7 @@ impl PkarrPublisherBuilder {
             self.pkarr_relay,
             tls_config,
             self.dns_resolver.unwrap_or_default(),
+            self.proxy_url,
             #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
             self.native_tcp_socket_initializer,
         );
@@ -259,6 +264,10 @@ impl AddressLookupBuilder for PkarrPublisherBuilder {
         #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
         {
             self.native_tcp_socket_initializer = endpoint.native_tcp_socket_initializer();
+        }
+        #[cfg(not(wasm_browser))]
+        {
+            self.proxy_url = endpoint.proxy_url().cloned();
         }
         let tls_config = endpoint.tls_config().clone();
         Ok(self.build(endpoint.secret_key().clone(), tls_config))
@@ -450,6 +459,8 @@ pub struct PkarrResolverBuilder {
     pkarr_relay: Url,
     #[cfg(not(wasm_browser))]
     dns_resolver: Option<DnsResolver>,
+    #[cfg(not(wasm_browser))]
+    proxy_url: Option<Url>,
     #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
     native_tcp_socket_initializer: Option<iroh_relay::client::NativeTcpSocketInitializer>,
 }
@@ -472,6 +483,7 @@ impl PkarrResolverBuilder {
             self.pkarr_relay,
             tls_config,
             self.dns_resolver.unwrap_or_default(),
+            self.proxy_url,
             #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
             self.native_tcp_socket_initializer,
         );
@@ -492,6 +504,10 @@ impl AddressLookupBuilder for PkarrResolverBuilder {
         #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
         {
             self.native_tcp_socket_initializer = endpoint.native_tcp_socket_initializer();
+        }
+        #[cfg(not(wasm_browser))]
+        {
+            self.proxy_url = endpoint.proxy_url().cloned();
         }
         let tls_config = endpoint.tls_config().clone();
         Ok(self.build(tls_config))
@@ -524,6 +540,8 @@ impl PkarrResolver {
             pkarr_relay,
             #[cfg(not(wasm_browser))]
             dns_resolver: None,
+            #[cfg(not(wasm_browser))]
+            proxy_url: None,
             #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
             native_tcp_socket_initializer: None,
         }
@@ -612,11 +630,23 @@ impl PkarrRelayClient {
         tls_config: rustls::ClientConfig,
         dns_resolver: DnsResolver,
     ) -> Self {
+        Self::with_proxy(pkarr_relay_url, tls_config, dns_resolver, None)
+    }
+
+    /// Creates a client using the endpoint proxy without changing socket policy.
+    #[cfg(not(wasm_browser))]
+    pub(crate) fn with_proxy(
+        pkarr_relay_url: Url,
+        tls_config: rustls::ClientConfig,
+        dns_resolver: DnsResolver,
+        proxy_url: Option<Url>,
+    ) -> Self {
         Self::new_with_socket_initializer(
             pkarr_relay_url,
             tls_config,
             dns_resolver,
-            #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
+            proxy_url,
+            #[cfg(feature = "native-tcp-socket-initializer")]
             None,
         )
     }
@@ -626,11 +656,18 @@ impl PkarrRelayClient {
         pkarr_relay_url: Url,
         tls_config: rustls::ClientConfig,
         dns_resolver: DnsResolver,
+        proxy_url: Option<Url>,
         #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
         initialize: Option<iroh_relay::client::NativeTcpSocketInitializer>,
     ) -> Self {
         #[allow(unused_mut)]
         let mut builder = reqwest_client_builder(tls_config, dns_resolver);
+        if let Some(proxy_url) = proxy_url {
+            match reqwest::Proxy::all(proxy_url.clone()) {
+                Ok(proxy) => builder = builder.proxy(proxy),
+                Err(err) => warn!(%proxy_url, "ignoring invalid proxy url for pkarr: {err:#}"),
+            }
+        }
         #[cfg(all(not(wasm_browser), feature = "native-tcp-socket-initializer"))]
         if let Some(initialize) = initialize {
             builder = initialize.configure_http_client(builder);
@@ -868,5 +905,89 @@ mod native_socket_policy_tests {
             "refused policy must prevent server connection"
         );
         endpoint.close().await;
+    }
+}
+
+#[cfg(all(test, not(wasm_browser)))]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use n0_error::{Result, StdResultExt};
+    use n0_future::{StreamExt, task, time};
+    use tokio::{io::AsyncReadExt, sync::oneshot};
+
+    use super::*;
+    use crate::endpoint::presets;
+
+    /// Spawns a fake HTTP proxy which captures the request line of the first connection
+    /// it receives and then hangs up.
+    async fn capturing_proxy() -> Result<(Url, oneshot::Receiver<String>)> {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .anyerr()?;
+        let url: Url = format!("http://{}", listener.local_addr().anyerr()?)
+            .parse()
+            .anyerr()?;
+        let (tx, rx) = oneshot::channel();
+        task::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut line = Vec::new();
+            let mut byte = [0u8; 1];
+            while let Ok(1) = stream.read(&mut byte).await {
+                if byte[0] == b'\n' {
+                    break;
+                }
+                line.push(byte[0]);
+            }
+            tx.send(String::from_utf8_lossy(&line).trim().to_string())
+                .ok();
+        });
+        Ok((url, rx))
+    }
+
+    /// The pkarr resolver sends its requests through the endpoint's proxy.
+    #[tokio::test]
+    async fn resolver_uses_endpoint_proxy() -> Result {
+        let (proxy_url, request_line) = capturing_proxy().await?;
+        let builder = Endpoint::builder(presets::Minimal)
+            .proxy_url(proxy_url)
+            .address_lookup(PkarrResolver::builder(
+                "https://pkarr.test/pkarr".parse().anyerr()?,
+            ));
+        #[cfg(feature = "native-tcp-socket-initializer")]
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        #[cfg(feature = "native-tcp-socket-initializer")]
+        let builder = {
+            let observed = calls.clone();
+            builder.native_relay_tcp_socket_initializer(move |_| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        };
+        let endpoint = builder.bind().await?;
+
+        // The fake proxy never completes the tunnel, so the lookup fails. What
+        // matters is that it was attempted through the proxy.
+        let id = SecretKey::generate().public();
+        let mut lookup = endpoint.address_lookup()?.resolve(id);
+        let _ = time::timeout(Duration::from_secs(10), lookup.next()).await;
+
+        let request_line = time::timeout(Duration::from_secs(10), request_line)
+            .await
+            .expect("proxy did not receive a request, the lookup bypassed it")
+            .anyerr()?;
+        assert!(
+            request_line.starts_with("CONNECT pkarr.test:443 "),
+            "proxy received: {request_line}"
+        );
+        #[cfg(feature = "native-tcp-socket-initializer")]
+        assert!(
+            calls.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the proxy connection must retain the endpoint socket policy"
+        );
+        endpoint.close().await;
+        Ok(())
     }
 }
