@@ -704,15 +704,15 @@ mod tests {
     ) -> (Result<ServerConfirmsAuth>, Result<(PublicKey, Mechanism)>) {
         let (client, server) = tokio::io::duplex(1024);
 
-        let mut client_io = Framed::new(client, LengthDelimitedCodec::new())
+        let client_io = Framed::new(client, LengthDelimitedCodec::new())
             .map_ok(BytesMut::freeze)
-            .map_err(AnyError::from_std)
-            .sink_map_err(AnyError::from_std)
+            .map_err(AnyError::from_std);
+        let mut client_io = SinkExt::<bytes::Bytes>::sink_map_err(client_io, AnyError::from_std)
             .with_shared_secret(client_shared_secret);
-        let mut server_io = Framed::new(server, LengthDelimitedCodec::new())
+        let server_io = Framed::new(server, LengthDelimitedCodec::new())
             .map_ok(BytesMut::freeze)
-            .map_err(AnyError::from_std)
-            .sink_map_err(AnyError::from_std)
+            .map_err(AnyError::from_std);
+        let mut server_io = SinkExt::<bytes::Bytes>::sink_map_err(server_io, AnyError::from_std)
             .with_shared_secret(server_shared_secret);
 
         let client_auth_header = KeyMaterialClientAuth::new(secret_key, &client_io)
